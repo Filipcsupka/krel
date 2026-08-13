@@ -1,5 +1,9 @@
 # krel
 
+[![CI](https://github.com/Filipcsupka/krel/actions/workflows/ci.yml/badge.svg)](https://github.com/Filipcsupka/krel/actions/workflows/ci.yml)
+[![Release](https://github.com/Filipcsupka/krel/actions/workflows/release.yml/badge.svg)](https://github.com/Filipcsupka/krel/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 `krel` is a read-only Kubernetes relationship TUI for understanding how namespace-scoped objects connect.
 
 It is built for operators and developers who want a fast terminal workflow for answering questions like:
@@ -10,6 +14,18 @@ It is built for operators and developers who want a fast terminal workflow for a
 - What graph-derived problems are visible in this namespace?
 
 The primary binary is `kr`, with `krel` also available as the full command name.
+
+## Quick Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
+```
+
+Then run:
+
+```bash
+kr
+```
 
 ## Status
 
@@ -30,22 +46,31 @@ The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, buil
 
 ## Install
 
-Install with one command:
+Install the latest release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
 ```
 
-Or with Go:
+The install script installs both `kr` and `krel`. It uses `$BINDIR` when set, then `$GOBIN`, then `~/.local/bin` when that directory exists or is already on PATH, and finally `$(go env GOPATH)/bin`.
 
-```bash
-go install github.com/filipcsupka/krel/cmd/kr@latest
-```
-
-The install script installs both `kr` and `krel` into `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is not set. To choose the target directory:
+To choose the target directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR=/usr/local/bin sh
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | VERSION=v0.1.0 sh
+```
+
+Install with Go:
+
+```bash
+go install github.com/filipcsupka/krel/cmd/kr@latest
+go install github.com/filipcsupka/krel/cmd/krel@latest
 ```
 
 Install from a local checkout:
@@ -174,9 +199,11 @@ docs/         project guides
 
 - [Getting Started](docs/getting-started.md)
 - [Development Guide](docs/development.md)
+- [Release Guide](docs/release.md)
 - [Roadmap](docs/roadmap.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security Policy](SECURITY.md)
+- [Support](SUPPORT.md)
 
 ## Contributing
 

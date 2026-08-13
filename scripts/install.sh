@@ -8,6 +8,8 @@ bin_dir=${BINDIR:-}
 if [ -z "$bin_dir" ]; then
 	if [ -n "${GOBIN:-}" ]; then
 		bin_dir=$GOBIN
+	elif [ -n "${HOME:-}" ] && { [ -d "$HOME/.local/bin" ] || case ":$PATH:" in *":$HOME/.local/bin:"*) true ;; *) false ;; esac; }; then
+		bin_dir=$HOME/.local/bin
 	else
 		gopath=$(go env GOPATH)
 		bin_dir=$gopath/bin

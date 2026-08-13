@@ -4,24 +4,33 @@ This guide gets `krel` running against a Kubernetes-compatible cluster.
 
 ## Install
 
-Install with one command:
+Install the latest release with one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
 ```
 
-Or install the short binary with Go:
+The installer downloads prebuilt release binaries when they are available. If a release asset is unavailable and Go is installed, it falls back to `go install`.
 
-```bash
-go install github.com/filipcsupka/krel/cmd/kr@latest
-```
-
-The installer puts binaries in `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is not set.
+The installer puts both `kr` and `krel` in `$BINDIR` when set, then `$GOBIN`, then `~/.local/bin` when that directory exists or is already on PATH, and finally `$(go env GOPATH)/bin`.
 
 To install somewhere specific:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR=/usr/local/bin sh
+```
+
+To install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | VERSION=v0.1.0 sh
+```
+
+Install with Go:
+
+```bash
+go install github.com/filipcsupka/krel/cmd/kr@latest
+go install github.com/filipcsupka/krel/cmd/krel@latest
 ```
 
 From a local checkout:

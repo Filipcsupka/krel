@@ -25,6 +25,10 @@ go run ./cmd/kr --namespace default
 - Documentation is updated when user-visible behavior changes.
 - `make test` passes.
 
+## Releases
+
+Releases are cut from `main` with semantic version tags. See [docs/release.md](docs/release.md).
+
 ## Code Style
 
 Use standard Go formatting:
