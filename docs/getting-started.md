@@ -4,6 +4,26 @@ This guide gets `krel` running against a Kubernetes-compatible cluster.
 
 ## Install
 
+Install with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
+```
+
+Or install the short binary with Go:
+
+```bash
+go install github.com/filipcsupka/krel/cmd/kr@latest
+```
+
+The installer puts binaries in `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is not set.
+
+To install somewhere specific:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR=/usr/local/bin sh
+```
+
 From a local checkout:
 
 ```bash
@@ -15,7 +35,7 @@ This installs:
 - `kr`, the short command
 - `krel`, the full command
 
-To install somewhere specific:
+Local checkout with a custom target:
 
 ```bash
 BINDIR=/usr/local/bin ./scripts/install.sh

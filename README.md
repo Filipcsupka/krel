@@ -30,15 +30,31 @@ The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, buil
 
 ## Install
 
-Install from the current checkout:
+Install with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
+```
+
+Or with Go:
+
+```bash
+go install github.com/filipcsupka/krel/cmd/kr@latest
+```
+
+The install script installs both `kr` and `krel` into `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is not set. To choose the target directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR=/usr/local/bin sh
+```
+
+Install from a local checkout:
 
 ```bash
 make install
 ```
 
-This installs both `kr` and `krel` into `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is not set.
-
-To choose the target directory:
+Or:
 
 ```bash
 BINDIR=/usr/local/bin ./scripts/install.sh
