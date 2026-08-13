@@ -1,94 +1,179 @@
 # krel
 
-`krel` is the initial implementation of the Kubernetes relationship TUI described in `~/Documents/ops-brain/moje/k8s-TUI.md`.
+`krel` is a read-only Kubernetes relationship TUI for understanding how namespace-scoped objects connect.
 
-The first usable binary is `krel`, with `kr` as a short alias: a read-only terminal app that loads namespace-scoped Kubernetes/OpenShift objects, builds a relationship graph, and shows object-focused relations, details, events, YAML, and problems.
+It is built for operators and developers who want a fast terminal workflow for answering questions like:
 
-Kubeconfig loading follows the standard Kubernetes client behavior:
+- Which Pods does this Service select?
+- Which ConfigMaps, Secrets, PVCs, and ServiceAccounts does this workload use?
+- Why is this object relevant to the selected resource?
+- What graph-derived problems are visible in this namespace?
 
-- no flags: load the current context from `$KUBECONFIG`, or `~/.kube/config` when `$KUBECONFIG` is unset
-- multiple paths in `$KUBECONFIG` are merged by client-go
-- `--kubeconfig <path>` overrides the default loading rules
-- `--context <name>` starts directly on that context
+The primary binary is `kr`, with `krel` also available as the full command name.
 
-## Run
+## Status
 
-Install the short `kr` command and full `krel` command:
+`krel` is early-stage community software. The current release is useful for exploration and diagnostics, but the project is still evolving quickly.
 
-```bash
-./scripts/install.sh
-```
+The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, builds a relationship graph, and renders focused views in a terminal UI.
 
-Or:
+## Features
+
+- Bubble Tea terminal UI for browsing namespace resources
+- Kubernetes client-go kubeconfig loading
+- Context, namespace, and kubeconfig switching inside the TUI
+- Object summaries, relations, YAML, events, and problem views
+- Non-interactive commands for scripts and quick checks
+- Support for Pods, Deployments, ReplicaSets, Services, EndpointSlices, ConfigMaps, Secrets, PVCs, ServiceAccounts, Ingresses, and OpenShift Routes
+- Relationship edges for ownership, Services selecting Pods, Pod references, Ingress backends, and Routes pointing to Services
+- Basic problem detection for missing references, Services selecting zero Pods, and unbound PVCs
+
+## Install
+
+Install from the current checkout:
 
 ```bash
 make install
 ```
 
-By default this installs into `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is unset. Override the target directory with:
+This installs both `kr` and `krel` into `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is not set.
+
+To choose the target directory:
 
 ```bash
 BINDIR=/usr/local/bin ./scripts/install.sh
 ```
 
-After install:
-
-```bash
-kr
-```
-
-For local development without installing:
+You can also run without installing:
 
 ```bash
 go run ./cmd/kr --namespace default
 ```
 
-Useful flags:
+## Usage
+
+Start the TUI with your current kubeconfig context:
 
 ```bash
-go run ./cmd/kr --context <context> --namespace <namespace>
-go run ./cmd/kr --kubeconfig <path> --namespace <namespace>
+kr
 ```
 
-Non-interactive Phase 0 commands:
+Open a specific namespace:
 
 ```bash
-go run ./cmd/kr --namespace default why pod <pod-name>
-go run ./cmd/kr --namespace default refs secret <secret-name>
-go run ./cmd/kr --namespace default problems
+kr --namespace default
 ```
 
-## Keys
+Use a specific context or kubeconfig:
 
-- `/` filter resources
-- `tab` switch pane
-- `:` command mode
-- `r` relations
-- `d` details
-- `y` YAML
-- `e` events
-- `p` problems
-- `?` help
-- `q` quit
+```bash
+kr --context my-cluster --namespace apps
+kr --kubeconfig ~/.kube/config --namespace apps
+```
+
+Kubeconfig loading follows standard Kubernetes client behavior:
+
+- without flags, `krel` loads the current context from `$KUBECONFIG`, or `~/.kube/config` when `$KUBECONFIG` is unset
+- multiple paths in `$KUBECONFIG` are merged by client-go
+- `--kubeconfig <path>` overrides the default loading rules
+- `--context <name>` starts directly on that context
+
+## Keyboard
+
+| Key | Action |
+| --- | --- |
+| `/` | Filter resources |
+| `tab` | Switch pane |
+| `:` | Command mode |
+| `r` | Relations view |
+| `d` | Details view |
+| `y` | YAML view |
+| `e` | Events view |
+| `p` | Problems view |
+| `?` | Help |
+| `q` | Quit |
 
 Command mode:
 
-- `:ctx` list contexts
-- `:ctx <name>` switch context and use that context's namespace, or `default`
-- `:ns <namespace>` switch namespace on the current context
-- `:kubeconfig <path>` or `:kc <path>` switch kubeconfig
-- `:refresh` reload the current snapshot
+```text
+:ctx
+:ctx <name>
+:ns <namespace>
+:kubeconfig <path>
+:kc <path>
+:refresh
+```
 
-## Current Scope
+## CLI Commands
 
-Phase 1 scaffold:
+Show why an object is connected to other objects:
 
-- Phase 0 CLI commands: `why`, `refs`, `problems`
-- default kubeconfig/current-context loading, with live context/kubeconfig/namespace switching
-- Bubble Tea TUI
-- namespace resource browser
-- focus summary
-- relation/details/YAML/events/problems views
-- support for Pods, Deployments, ReplicaSets, Services, EndpointSlices, ConfigMaps, Secrets, PVCs, ServiceAccounts, Ingresses, and OpenShift Routes
-- relationship edges for ownership, Services selecting Pods, Pod references, Ingress backends, and Routes to Services
-- basic problem detection for missing refs, Services selecting zero Pods, and unbound PVCs
+```bash
+kr --namespace default why pod <pod-name>
+```
+
+Show references and consumers for an object:
+
+```bash
+kr --namespace default refs secret <secret-name>
+```
+
+Show detected graph problems:
+
+```bash
+kr --namespace default problems
+```
+
+Kind aliases such as `po`, `pod`, `deploy`, `svc`, `cm`, `pvc`, `sa`, `ing`, and `route` are supported.
+
+## Development
+
+Requirements:
+
+- Go 1.26 or newer
+- Access to a Kubernetes-compatible cluster for manual testing
+
+Common commands:
+
+```bash
+make build
+make test
+go run ./cmd/kr --namespace default
+```
+
+Project layout:
+
+```text
+cmd/kr        short command entrypoint
+cmd/krel      full command entrypoint
+internal/cli  flag parsing and command execution
+internal/kube Kubernetes snapshot loading
+internal/graph relationship graph model and builder
+internal/tui  Bubble Tea terminal UI
+scripts/      local install helpers
+docs/         project guides
+```
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md)
+- [Development Guide](docs/development.md)
+- [Roadmap](docs/roadmap.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+
+## Contributing
+
+Contributions are welcome. Good first areas include relationship detection, problem checks, documentation, tests, and UX improvements.
+
+Before opening a pull request, run:
+
+```bash
+make test
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
