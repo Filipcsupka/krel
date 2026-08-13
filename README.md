@@ -18,7 +18,7 @@ The primary binary is `kr`, with `krel` also available as the full command name.
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR="$HOME/.local/bin" sh
 ```
 
 Then run:
@@ -49,7 +49,7 @@ The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, buil
 Install the latest release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR="$HOME/.local/bin" sh
 ```
 
 The install script installs both `kr` and `krel`. It uses `$BINDIR` when set, then `$GOBIN`, then `~/.local/bin` when that directory exists or is already on PATH, and finally `$(go env GOPATH)/bin`.
@@ -63,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/insta
 Install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR="$HOME/.local/bin" VERSION=v0.1.0 sh
 ```
 
 Install with Go:

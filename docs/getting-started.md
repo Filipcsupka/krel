@@ -7,7 +7,7 @@ This guide gets `krel` running against a Kubernetes-compatible cluster.
 Install the latest release with one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR="$HOME/.local/bin" sh
 ```
 
 The installer downloads prebuilt release binaries when they are available. If a release asset is unavailable and Go is installed, it falls back to `go install`.
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/insta
 To install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR="$HOME/.local/bin" VERSION=v0.1.0 sh
 ```
 
 Install with Go:

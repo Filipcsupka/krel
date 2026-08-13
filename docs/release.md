@@ -43,7 +43,7 @@ gh release view v0.1.0
 Test the installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Filipcsupka/krel/main/scripts/install.sh | BINDIR="$HOME/.local/bin" sh
 kr
 ```
 
