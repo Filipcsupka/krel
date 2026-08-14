@@ -155,11 +155,23 @@ func (m model) resourceList() list.Model {
 
 // leftListSize returns the resource list's width/height within the smaller
 // top-left quadrant of the 4-pane layout.
+// leftPaneOuterWidth is the outer (bordered) width of the whole left
+// column; leftListSize's returned width is narrower than this by
+// paneBoxOverhead to match the padded content area the box actually
+// renders into (border + Padding(0,1) eat 4 columns) — sizing the list to
+// the outer width instead causes bubbles list to wrap its own rows and
+// silently grow taller than requested.
+const paneBoxOverhead = 4
+
+func leftPaneOuterWidth(termWidth int) int {
+	return max(30, termWidth/3)
+}
+
 func (m model) leftListSize() (int, int) {
-	leftWidth := max(30, m.width/3)
+	outerWidth := leftPaneOuterWidth(m.width)
 	mainHeight := max(8, m.height-1)
 	leftTopHeight := max(10, mainHeight*3/5)
-	return leftWidth, max(6, leftTopHeight-2)
+	return max(20, outerWidth-paneBoxOverhead), max(6, leftTopHeight-2)
 }
 
 func newNamespaceList(snapshot kube.Snapshot) list.Model {
@@ -336,6 +348,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				lw, lh := m.leftListSize()
 				m.list.SetSize(lw, lh)
 				m.status = ""
+				return m, nil
+			}
+			if m.mode != "relations" {
+				m.mode = "relations"
+				m.summaryCursor = 0
+				m.status = ""
 			}
 			return m, nil
 		case "backspace":
@@ -404,16 +422,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.active = (m.active + 1) % paneCount
 		case "r":
 			m.mode = "relations"
+			m.active = paneRelations
 		case "d":
 			m.mode = "details"
+			m.active = paneRelations
 		case "y":
 			m.mode = "yaml"
+			m.active = paneRelations
 		case "e":
 			m.mode = "events"
+			m.active = paneRelations
 		case "p":
 			m.mode = "problems"
+			m.active = paneRelations
 		case "?":
 			m.mode = "help"
+			m.active = paneRelations
 		}
 	}
 
@@ -742,7 +766,8 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "loading..."
 	}
-	leftWidth, listHeight := m.leftListSize()
+	_, listHeight := m.leftListSize()
+	leftWidth := leftPaneOuterWidth(m.width)
 	rightWidth := max(40, m.width-leftWidth-3)
 	mainHeight := max(8, m.height-1)
 	leftTopHeight := listHeight + 2
@@ -756,7 +781,14 @@ func (m model) View() string {
 	rightTopHeight := max(4, rightRemaining/2)
 	rightBottomHeight := max(4, rightRemaining-rightTopHeight)
 
-	leftTop := paneStyle(m.active == paneResources).Width(leftWidth).Height(listHeight).Render(m.list.View())
+	// bubbles list.View() doesn't always respect SetSize exactly (its own
+	// pagination/help accounting can be off by a line); clip defensively so
+	// it never pushes the rest of the layout below the terminal.
+	listLines := strings.Split(m.list.View(), "\n")
+	if len(listLines) > listHeight {
+		listLines = listLines[:listHeight]
+	}
+	leftTop := paneStyle(m.active == paneResources).Width(leftWidth).Height(listHeight).Render(strings.Join(listLines, "\n"))
 	leftBottom := m.statusPaneView(leftWidth, leftBottomHeight)
 	usage := m.usagePaneView(rightWidth, usageHeight)
 	rightTop := m.relationsPaneView(rightWidth, rightTopHeight)
@@ -766,7 +798,16 @@ func (m model) View() string {
 	rightCol := lipgloss.JoinVertical(lipgloss.Left, usage, rightTop, rightBottom)
 	footer := m.footer()
 
-	return lipgloss.JoinVertical(lipgloss.Left, lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol), footer)
+	full := lipgloss.JoinVertical(lipgloss.Left, lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol), footer)
+
+	// Belt-and-suspenders: on very small terminals the per-pane minimum
+	// heights can add up to more than mainHeight. Never let the composed
+	// frame exceed the terminal, or the top of the layout scrolls out of
+	// view (list header, Usage panel) with no way back short of resizing.
+	if lines := strings.Split(full, "\n"); len(lines) > m.height {
+		full = strings.Join(lines[:m.height], "\n")
+	}
+	return full
 }
 
 func (m model) selected() (graph.Object, bool) {
@@ -846,7 +887,7 @@ func (m model) statusPaneView(width, height int) string {
 	if !ok {
 		return paneTitle("Status", "No resources loaded.", width, height, m.active == paneStatus)
 	}
-	body := statusPanelBody(m.snapshot.Graph, obj, width-4, height-2)
+	body := statusPanelBody(m.snapshot.Graph, obj, width-4, height-3)
 	return paneTitleRaw("Status", body, width, height, m.active == paneStatus)
 }
 
@@ -867,13 +908,17 @@ func (m model) relationsPaneView(width, height int) string {
 		return paneStyle(false).Width(width).Height(max(1, height-2)).Render("No resources loaded.")
 	}
 	if m.mode == "relations" || m.mode == "" {
-		body := m.relationsPanelBody(m.snapshot.Graph, obj, width-4, height-2)
-		return paneTitleRaw("Relations", body, width, height, m.active == paneRelations)
+		title := "Relations"
+		if m.active == paneRelations {
+			title = "Relations (j/k select, enter open, esc back)"
+		}
+		body := m.relationsPanelBody(m.snapshot.Graph, obj, width-4, height-3)
+		return paneTitleRaw(title, body, width, height, m.active == paneRelations)
 	}
 	var body, title string
 	switch m.mode {
 	case "yaml":
-		body = truncateLines(obj.YAML(), height-2)
+		body = truncateLines(obj.YAML(), height-3)
 		title = "Yaml"
 	case "events":
 		body = eventsView(obj)
@@ -892,7 +937,7 @@ func (m model) relationsPaneView(width, height int) string {
 }
 
 func (m model) logsPaneView(width, height int) string {
-	logs := m.logsView(width-4, height-2)
+	logs := m.logsView(width-4, height-3)
 	return paneTitleRaw("Logs", logs, width, height, m.active == paneLogs)
 }
 
@@ -908,11 +953,11 @@ func (m model) usagePaneView(width, height int) string {
 		return paneTitleRaw("Usage", "", width, height, false)
 	}
 	pods := relatedPods(m.snapshot.Graph, obj)
-	body := usageSummary(m.snapshot.PodMetrics, pods, width-4)
+	body := usageSummary(m.snapshot.PodMetrics, pods, width-4, height-3)
 	return paneTitleRaw("Usage", body, width, height, false)
 }
 
-func usageSummary(podMetrics map[string]kube.PodMetric, pods []graph.Object, width int) string {
+func usageSummary(podMetrics map[string]kube.PodMetric, pods []graph.Object, width, maxLines int) string {
 	var reqCPU, limCPU, reqMem, limMem, useCPU, useMem int64
 	haveUsage := false
 	for _, pod := range pods {
@@ -947,6 +992,9 @@ func usageSummary(podMetrics map[string]kube.PodMetric, pods []graph.Object, wid
 	}
 	lines = append(lines, fmt.Sprintf("cpu req/limit: %s/%s", formatMilli(reqCPU), formatMilli(limCPU)))
 	lines = append(lines, fmt.Sprintf("mem req/limit: %s/%s", formatMemBytes(reqMem), formatMemBytes(limMem)))
+	if maxLines > 0 && len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -2076,19 +2124,27 @@ func (m model) footer() string {
 		Render(truncateText(text, max(1, m.width-1)))
 }
 
+// Both pane renderers take `height` as the box's TOTAL rendered height
+// (borders included). lipgloss Style.Height() sets content height only —
+// the rounded border in paneStyle adds 2 more rows on top of that — so we
+// must ask lipgloss for height-2 to end up with `height` on screen.
+
 func paneTitle(title, body string, width, height int, active bool) string {
 	bodyWidth := max(8, width-4)
-	content := titleStyle.Render(truncateText(title, bodyWidth)) + "\n" + fitPanelText(body, bodyWidth, height-2)
-	return paneStyle(active).Width(width).Height(height).Render(content)
+	contentHeight := max(1, height-2)
+	content := titleStyle.Render(truncateText(title, bodyWidth)) + "\n" + fitPanelText(body, bodyWidth, contentHeight-1)
+	return paneStyle(active).Width(width).Height(contentHeight).Render(content)
 }
 
 // paneTitleRaw renders a body that the caller has already truncated/wrapped
 // and styled (ANSI colors included), so it must not be re-wrapped by
-// fitPanelText — re-wrapping would count escape-code bytes as width.
+// fitPanelText — re-wrapping would count escape-code bytes as width. The
+// caller must size its body to height-3 lines (border top+bottom + title).
 func paneTitleRaw(title, body string, width, height int, active bool) string {
 	bodyWidth := max(8, width-4)
+	contentHeight := max(1, height-2)
 	content := titleStyle.Render(truncateText(title, bodyWidth)) + "\n" + body
-	return paneStyle(active).Width(width).Height(height).Render(content)
+	return paneStyle(active).Width(width).Height(contentHeight).Render(content)
 }
 
 func paneStyle(active bool) lipgloss.Style {
