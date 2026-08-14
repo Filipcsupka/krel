@@ -15,7 +15,9 @@ vMAJOR.MINOR.PATCH
 Releases are automatic. On every push to `main` (i.e. every merged PR):
 
 1. **CI** (`.github/workflows/ci.yml`) runs gofmt check, `go vet`, race-enabled
-   tests, `govulncheck`, and a build.
+   tests, a build, and an informational `govulncheck` pass (reports but
+   doesn't block — it also flags Go stdlib/toolchain CVEs that trail Go
+   patch releases and aren't fixable from this repo).
 2. If CI succeeds, **Auto Tag** (`.github/workflows/auto-tag.yml`) bumps the
    patch version from the latest `vX.Y.Z` tag and pushes the new tag. It
    skips silently if the commit is already tagged.
