@@ -18,11 +18,13 @@ import (
 
 type pane int
 
+// Order matches the visual/tab-cycle layout: top-left, bottom-left,
+// top-right, bottom-right.
 const (
 	paneResources pane = iota
-	paneStatus
-	paneRelations
 	paneLogs
+	paneRelations
+	paneStatus
 	paneCount
 )
 
@@ -54,6 +56,7 @@ type model struct {
 	logSearch       string
 	logSearchMode   bool
 	summaryCursor   int
+	statusScroll    int
 }
 
 type reloadResult struct {
@@ -164,14 +167,17 @@ func (m model) resourceList() list.Model {
 const paneBoxOverhead = 4
 
 func leftPaneOuterWidth(termWidth int) int {
-	return max(30, termWidth/3)
+	return max(30, termWidth/2)
 }
 
+// leftListSize returns the resource list's content width/height. The left
+// column is split 50/50 with the Logs pane below it, matching the 50/50
+// width split between the left and right columns.
 func (m model) leftListSize() (int, int) {
 	outerWidth := leftPaneOuterWidth(m.width)
 	mainHeight := max(8, m.height-1)
-	leftTopHeight := max(10, mainHeight*3/5)
-	return max(20, outerWidth-paneBoxOverhead), max(6, leftTopHeight-2)
+	leftTopHeight := max(8, mainHeight/2)
+	return max(20, outerWidth-paneBoxOverhead), max(4, leftTopHeight-2)
 }
 
 func newNamespaceList(snapshot kube.Snapshot) list.Model {
@@ -338,6 +344,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.jumpToSummaryRef()
 			}
 		}
+		if m.active == paneStatus {
+			switch msg.String() {
+			case "j", "down":
+				if obj, ok := m.selected(); ok {
+					total := len(statusPanelLines(m.snapshot.Graph, obj))
+					if m.statusScroll < total-1 {
+						m.statusScroll++
+					}
+				}
+				return m, nil
+			case "k", "up":
+				if m.statusScroll > 0 {
+					m.statusScroll--
+				}
+				return m, nil
+			case "G":
+				m.statusScroll = 0
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -452,6 +478,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logErr = ""
 		m.logScroll = 0
 		m.summaryCursor = 0
+		m.statusScroll = 0
 		m.mode = "relations"
 		return m, tea.Batch(cmd, m.loadSelectedLogs())
 	}
@@ -773,13 +800,13 @@ func (m model) View() string {
 	leftTopHeight := listHeight + 2
 	leftBottomHeight := max(6, mainHeight-leftTopHeight)
 
-	usageHeight := max(5, mainHeight/6)
-	if usageHeight > 7 {
-		usageHeight = 7
-	}
+	// Usage is a fixed small strip (2 gauge lines + title + border).
+	usageHeight := 5
 	rightRemaining := max(6, mainHeight-usageHeight)
-	rightTopHeight := max(4, rightRemaining/2)
-	rightBottomHeight := max(4, rightRemaining-rightTopHeight)
+	// Relations gets cut down ~30% versus an even split so Status (the
+	// more information-dense pane) gets the extra room.
+	relationsHeight := max(5, rightRemaining*35/100)
+	statusHeight := max(6, rightRemaining-relationsHeight)
 
 	// bubbles list.View() doesn't always respect SetSize exactly (its own
 	// pagination/help accounting can be off by a line); clip defensively so
@@ -789,10 +816,10 @@ func (m model) View() string {
 		listLines = listLines[:listHeight]
 	}
 	leftTop := paneStyle(m.active == paneResources).Width(leftWidth).Height(listHeight).Render(strings.Join(listLines, "\n"))
-	leftBottom := m.statusPaneView(leftWidth, leftBottomHeight)
+	leftBottom := m.logsPaneView(leftWidth, leftBottomHeight)
 	usage := m.usagePaneView(rightWidth, usageHeight)
-	rightTop := m.relationsPaneView(rightWidth, rightTopHeight)
-	rightBottom := m.logsPaneView(rightWidth, rightBottomHeight)
+	rightTop := m.relationsPaneView(rightWidth, relationsHeight)
+	rightBottom := m.statusPaneView(rightWidth, statusHeight)
 
 	leftCol := lipgloss.JoinVertical(lipgloss.Left, leftTop, leftBottom)
 	rightCol := lipgloss.JoinVertical(lipgloss.Left, usage, rightTop, rightBottom)
@@ -887,8 +914,12 @@ func (m model) statusPaneView(width, height int) string {
 	if !ok {
 		return paneTitle("Status", "No resources loaded.", width, height, m.active == paneStatus)
 	}
-	body := statusPanelBody(m.snapshot.Graph, obj, width-4, height-3)
-	return paneTitleRaw("Status", body, width, height, m.active == paneStatus)
+	title := "Status"
+	if m.active == paneStatus {
+		title = "Status (j/k scroll, G top)"
+	}
+	body := statusPanelBody(m.snapshot.Graph, obj, width-4, height-3, m.statusScroll)
+	return paneTitleRaw(title, body, width, height, m.active == paneStatus)
 }
 
 // relationsPaneView is the top-right quadrant. By default it lists the
@@ -983,15 +1014,30 @@ func usageSummary(podMetrics map[string]kube.PodMetric, pods []graph.Object, wid
 	if len(pods) == 0 {
 		return "no pods"
 	}
-	lines := []string{}
-	if haveUsage {
-		lines = append(lines, gaugeLine("cpu", useCPU, limCPU, width))
-		lines = append(lines, gaugeLine("mem", useMem, limMem, width))
-	} else {
-		lines = append(lines, "cpu/mem usage: metrics-server unavailable")
+
+	var restarts int64
+	nodeSet := map[string]bool{}
+	for _, pod := range pods {
+		restarts += podRestarts(pod)
+		if node, _, _ := unstructuredNestedString(pod, "spec", "nodeName"); node != "" {
+			nodeSet[node] = true
+		}
 	}
-	lines = append(lines, fmt.Sprintf("cpu req/limit: %s/%s", formatMilli(reqCPU), formatMilli(limCPU)))
-	lines = append(lines, fmt.Sprintf("mem req/limit: %s/%s", formatMemBytes(reqMem), formatMemBytes(limMem)))
+	nodeInfo := "-"
+	switch nodes := sortedMapKeys(nodeSet); len(nodes) {
+	case 0:
+	case 1:
+		nodeInfo = nodes[0]
+	default:
+		nodeInfo = fmt.Sprintf("%d nodes", len(nodes))
+	}
+	cpuExtra := fmt.Sprintf("pods:%d restarts:%d", len(pods), restarts)
+	memExtra := "node:" + nodeInfo
+
+	lines := []string{
+		gaugeLine("cpu", useCPU, reqCPU, limCPU, haveUsage, cpuExtra, width),
+		gaugeLine("mem", useMem, reqMem, limMem, haveUsage, memExtra, width),
+	}
 	if maxLines > 0 && len(lines) > maxLines {
 		lines = lines[:maxLines]
 	}
@@ -1027,28 +1073,43 @@ var gaugeWarnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 var gaugeBadStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 var gaugeMutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 
-func gaugeLine(label string, used, limit int64, width int) string {
-	if limit <= 0 {
-		return gaugeMutedStyle.Render(truncateText(fmt.Sprintf("%s: no limit set (using %s)", label, formatQuantity(label, used)), width))
+// gaugeLine renders one usage row: a bar (when metrics-server usage data is
+// available and a limit is set), req/limit, and an extra info field after
+// a "|" separator — keeping the whole panel to 2 lines (cpu, mem) instead
+// of spreading req/limit onto their own rows.
+func gaugeLine(label string, used, req, limit int64, haveUsage bool, extra string, width int) string {
+	var base string
+	var style lipgloss.Style
+	switch {
+	case haveUsage && limit > 0:
+		pct := float64(used) / float64(limit)
+		if pct < 0 {
+			pct = 0
+		}
+		if pct > 1 {
+			pct = 1
+		}
+		barWidth := 12
+		filled := int(pct * float64(barWidth))
+		bar := strings.Repeat("#", filled) + strings.Repeat("-", barWidth-filled)
+		style = gaugeGoodStyle
+		if pct >= 0.9 {
+			style = gaugeBadStyle
+		} else if pct >= 0.7 {
+			style = gaugeWarnStyle
+		}
+		base = fmt.Sprintf("%s [%s] %3.0f%% req:%s lim:%s", label, bar, pct*100, formatQuantity(label, req), formatQuantity(label, limit))
+	case haveUsage:
+		style = gaugeMutedStyle
+		base = fmt.Sprintf("%s %s used  req:%s lim:none", label, formatQuantity(label, used), formatQuantity(label, req))
+	default:
+		style = gaugeMutedStyle
+		base = fmt.Sprintf("%s req:%s lim:%s (metrics-server unavailable)", label, formatQuantity(label, req), formatQuantity(label, limit))
 	}
-	pct := float64(used) / float64(limit)
-	if pct < 0 {
-		pct = 0
+	if extra != "" {
+		base += "  | " + extra
 	}
-	if pct > 1 {
-		pct = 1
-	}
-	barWidth := 16
-	filled := int(pct * float64(barWidth))
-	bar := strings.Repeat("#", filled) + strings.Repeat("-", barWidth-filled)
-	style := gaugeGoodStyle
-	if pct >= 0.9 {
-		style = gaugeBadStyle
-	} else if pct >= 0.7 {
-		style = gaugeWarnStyle
-	}
-	text := fmt.Sprintf("%s [%s] %3.0f%% (%s/%s)", label, bar, pct*100, formatQuantity(label, used), formatQuantity(label, limit))
-	return style.Render(truncateText(text, width))
+	return style.Render(truncateText(base, width))
 }
 
 func formatQuantity(label string, v int64) string {
@@ -1203,39 +1264,33 @@ var eventLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 var envHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("108")).Bold(true)
 var envItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("108"))
 
+// statusPanelLines avoids repeating what the resource list row and the top
+// status line already show (running/restarts counts, per-pod rows) — this
+// pane is for what isn't visible elsewhere: why something is unhealthy
+// (problems, non-Ready status.conditions — covers Node, cert-manager
+// Certificates, HPAs, and most CRDs that follow the conditions convention),
+// real event messages, then environment values grouped by container.
 func statusPanelLines(g *graph.Graph, obj graph.Object) []styledLine {
 	var out []styledLine
 	status, health := resourceStatus(obj)
 	out = append(out, styledLine{"status: " + status, statusColor(health)})
 
 	pods := relatedPods(g, obj)
-	if len(pods) > 0 {
+	if len(pods) > 1 {
 		running, failed, pending, restarts := podRollup(pods)
 		out = append(out, styledLine{
 			fmt.Sprintf("pods: %d running / %d failed / %d pending  restarts:%d", running, failed, pending, restarts),
 			plainLineStyle,
 		})
-		for _, pod := range limitObjects(pods, 4) {
-			podStatus, podHealth := resourceStatus(pod)
-			node, _, _ := unstructuredNestedString(pod, "spec", "nodeName")
-			line := fmt.Sprintf("pod: %s  %s", pod.Ref.Name, podStatus)
-			if node != "" {
-				line += "  node:" + node
-			}
-			out = append(out, styledLine{line, statusColor(podHealth)})
-		}
-		for _, img := range imageLines(pods) {
-			out = append(out, styledLine{img, plainLineStyle})
-		}
 	}
 
+	for _, c := range conditionLines(obj) {
+		out = append(out, c)
+	}
 	for _, p := range problemLines(g, obj) {
 		out = append(out, styledLine{p, problemLineStyle})
 	}
-	for _, e := range eventRollupLines(obj, pods) {
-		out = append(out, styledLine{e, plainLineStyle})
-	}
-	for _, e := range recentEventLines(obj, pods, 6) {
+	for _, e := range recentEventLines(obj, pods, 8) {
 		out = append(out, styledLine{e, eventLineStyle})
 	}
 	for i, e := range envLines(pods, 20) {
@@ -1248,14 +1303,70 @@ func statusPanelLines(g *graph.Graph, obj graph.Object) []styledLine {
 	return out
 }
 
+// badWhenTrueConditions are Node condition types where True means trouble
+// (the opposite polarity of most conditions, where True means healthy).
+var badWhenTrueConditions = map[string]bool{
+	"MemoryPressure":     true,
+	"DiskPressure":       true,
+	"PIDPressure":        true,
+	"NetworkUnavailable": true,
+}
+
+// conditionLines reads status.conditions generically — the convention most
+// Kubernetes resources and CRDs follow (Node, Certificate, HPA, SealedSecret,
+// custom operators, ...) — and surfaces each with a reason/message, colored
+// by whether that condition indicates a problem.
+func conditionLines(obj graph.Object) []styledLine {
+	conditions, _, _ := unstructuredNestedSlice(obj, "status", "conditions")
+	var out []styledLine
+	for _, c := range conditions {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _, _ := nestedString(cm, "type")
+		status, _, _ := nestedString(cm, "status")
+		reason, _, _ := nestedString(cm, "reason")
+		message, _, _ := nestedString(cm, "message")
+		if typ == "" {
+			continue
+		}
+		line := typ + ": " + status
+		if reason != "" {
+			line += " (" + reason + ")"
+		}
+		if message != "" {
+			line += " - " + message
+		}
+		bad := (typ == "Ready" && status != "True") || (badWhenTrueConditions[typ] && status == "True")
+		style := plainLineStyle
+		if bad {
+			style = problemLineStyle
+		}
+		out = append(out, styledLine{line, style})
+	}
+	return out
+}
+
 // statusPanelBody truncates each line to width before coloring (so ANSI
-// bytes never get counted as display width) and caps the panel at maxLines.
-func statusPanelBody(g *graph.Graph, obj graph.Object, width, maxLines int) string {
+// bytes never get counted as display width), applies the scroll offset,
+// and caps the panel at maxLines.
+func statusPanelBody(g *graph.Graph, obj graph.Object, width, maxLines, scroll int) string {
 	lines := statusPanelLines(g, obj)
-	out := make([]string, 0, len(lines))
-	for i, l := range lines {
+	if scroll < 0 {
+		scroll = 0
+	}
+	if maxLines > 0 && scroll > max(0, len(lines)-maxLines) {
+		scroll = max(0, len(lines)-maxLines)
+	}
+	if scroll > len(lines) {
+		scroll = len(lines)
+	}
+	visible := lines[scroll:]
+	out := make([]string, 0, len(visible))
+	for i, l := range visible {
 		if len(out) >= maxLines {
-			out = append(out, fmt.Sprintf("... %d more", len(lines)-i))
+			out = append(out, fmt.Sprintf("... %d more", len(visible)-i))
 			break
 		}
 		out = append(out, l.style.Render(truncateText(l.text, width)))
@@ -1372,45 +1483,6 @@ func podRollup(pods []graph.Object) (running, failed, pending int, restarts int6
 		restarts += podRestarts(pod)
 	}
 	return running, failed, pending, restarts
-}
-
-func limitObjects(objects []graph.Object, limit int) []graph.Object {
-	if len(objects) <= limit {
-		return objects
-	}
-	return objects[:limit]
-}
-
-func imageLines(pods []graph.Object) []string {
-	seen := map[string]bool{}
-	var lines []string
-	for _, pod := range pods {
-		containers, _, _ := unstructuredNestedSlice(pod, "spec", "containers")
-		for _, container := range containers {
-			c, ok := container.(map[string]any)
-			if !ok {
-				continue
-			}
-			image, _, _ := nestedString(c, "image")
-			name, _, _ := nestedString(c, "name")
-			if image == "" {
-				continue
-			}
-			line := "image: " + image
-			if name != "" {
-				line = "image: " + name + "=" + image
-			}
-			if !seen[line] {
-				seen[line] = true
-				lines = append(lines, line)
-			}
-		}
-	}
-	sort.Strings(lines)
-	if len(lines) > 3 {
-		return lines[:3]
-	}
-	return lines
 }
 
 func serviceLines(g *graph.Graph, obj graph.Object) []string {
@@ -1706,34 +1778,6 @@ func problemLines(g *graph.Graph, obj graph.Object) []string {
 	}
 	sort.Strings(lines)
 	return lines
-}
-
-func eventRollupLines(obj graph.Object, pods []graph.Object) []string {
-	warnings, normal := eventCounts(obj.Events)
-	for _, pod := range pods {
-		w, n := eventCounts(pod.Events)
-		warnings += w
-		normal += n
-	}
-	if warnings == 0 && normal == 0 {
-		return nil
-	}
-	line := fmt.Sprintf("events: %d warning / %d normal", warnings, normal)
-	if warnings > 0 {
-		return []string{line}
-	}
-	return []string{line}
-}
-
-func eventCounts(events []string) (warnings, normal int) {
-	for _, event := range events {
-		if strings.HasPrefix(strings.ToLower(event), "warning ") {
-			warnings++
-		} else {
-			normal++
-		}
-	}
-	return warnings, normal
 }
 
 func directRefLines(g *graph.Graph, obj graph.Object) []string {
@@ -2078,11 +2122,12 @@ func problemsView(g *graph.Graph, obj graph.Object) string {
 
 func helpView() string {
 	return strings.Join([]string{
-		"tab  switch pane (resources/status/relations/logs)",
+		"tab  switch pane (resources/logs/relations/status)",
 		"/    filter resources, or search logs when Logs pane active",
 		":    command mode",
-		"relations pane: j/k select a ref, enter opens it (cm/secret/sa/pvc/svc/... values in Yaml)",
+		"relations pane: j/k select a ref, enter opens it (cm/secret/sa/pvc/svc/... values in Yaml), esc back",
 		"logs pane: j/k or ↑/↓ scroll, G jump to live tail, n/N next/prev search match",
+		"status pane: j/k or ↑/↓ scroll, G back to top",
 		":q / ctrl-c quit",
 		":pod :svc :deploy :sts :ds :job :cj :cm :secret :pvc :all",
 		":node :events :hpa :np :pdb :quota :cert",

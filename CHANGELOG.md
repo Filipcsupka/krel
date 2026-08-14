@@ -13,6 +13,13 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 - Opening a Secret/ConfigMap/etc. from the Relations pane left it stuck on the opened object's YAML with no way back; `esc` now returns the Relations pane to its default relations list.
 - `r`/`d`/`y`/`e`/`p` now also move keyboard focus to the Relations pane, so you don't have to separately `tab` to it before the pane responds to `j`/`k`/`enter`. The Relations pane's title also shows its keybindings while focused.
 
+### Changed
+
+- Reworked the layout: Logs moved from the right column to under the resource list on the left (both columns now 50/50 width, list/logs 50/50 height).
+- Usage panel condensed to 2 lines (cpu, mem) instead of 4 — each line's gauge/req/limit is followed by a `|`-separated extra field (pod/restart count, node placement) instead of spreading onto separate rows.
+- Relations pane given less height (~35% of the remaining right column) and Status given the rest, since Status carries more information.
+- Status pane no longer repeats what the resource list row and top status line already show (per-pod status rows, image list) — it now surfaces non-Ready `status.conditions` generically (works for Nodes, Certificates, HPAs, and most CRDs that follow the conditions convention), keeping problems/events/env. Scrollable with `j`/`k`, `G` back to top.
+
 ## [0.1.4] - 2026-08-14
 
 ### Fixed
