@@ -198,7 +198,6 @@ docs/         project guides
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)
-- [Painpoints krel solves (vs k9s)](docs/painpoints.md)
 - [Development Guide](docs/development.md)
 - [Release Guide](docs/release.md)
 - [Roadmap](docs/roadmap.md)

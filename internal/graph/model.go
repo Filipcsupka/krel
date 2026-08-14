@@ -56,6 +56,8 @@ func (o Object) Summary() []string {
 	if o.Ref.Namespace != "" {
 		lines = append(lines, "namespace: "+o.Ref.Namespace)
 	}
+	lines = append(lines, "apiVersion: "+o.Raw.GetAPIVersion())
+	lines = append(lines, "uid: "+string(o.Ref.UID))
 	if len(o.Labels) > 0 {
 		pairs := make([]string, 0, len(o.Labels))
 		for k, v := range o.Labels {
