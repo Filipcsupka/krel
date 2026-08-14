@@ -75,7 +75,7 @@ func LoadLogs(ctx context.Context, req LogRequest) LogResult {
 				if req.Grep != "" && !strings.Contains(strings.ToLower(line), strings.ToLower(req.Grep)) {
 					continue
 				}
-				lines = append(lines, fmt.Sprintf("%s/%s %s", podName, container, line))
+				lines = append(lines, line)
 			}
 		}
 	}
