@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/filipcsupka/krel/internal/graph"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -34,6 +35,16 @@ type Snapshot struct {
 	Options    Options
 	Graph      *graph.Graph
 	LoadErrors []string
+	PodMetrics map[string]PodMetric
+}
+
+// PodMetric is the current metrics-server usage for a pod, summed across
+// its containers. Zero-value (found=false) means metrics-server isn't
+// installed/reachable or the pod hasn't reported usage yet.
+type PodMetric struct {
+	CPUMilli int64
+	MemBytes int64
+	Found    bool
 }
 
 type resourceDef struct {
@@ -143,7 +154,56 @@ func LoadSnapshot(ctx context.Context, opts Options) (Snapshot, error) {
 		Options:    Options{Namespace: namespace, Kubeconfig: opts.Kubeconfig, ContextName: contextName},
 		Graph:      graph.Build(objects),
 		LoadErrors: loadErrors,
+		PodMetrics: loadPodMetrics(ctx, dyn, namespace),
 	}, nil
+}
+
+var podMetricsGVR = schema.GroupVersionResource{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "pods"}
+
+// loadPodMetrics is best-effort: clusters without metrics-server (or without
+// RBAC for it) simply get an empty map, never an error.
+func loadPodMetrics(ctx context.Context, dyn dynamic.Interface, namespace string) map[string]PodMetric {
+	metrics := map[string]PodMetric{}
+	list, err := dyn.Resource(podMetricsGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return metrics
+	}
+	for _, item := range list.Items {
+		name := item.GetName()
+		containers, _, _ := unstructured.NestedSlice(item.Object, "containers")
+		var cpu, mem int64
+		for _, c := range containers {
+			container, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			usage, _, _ := unstructured.NestedMap(container, "usage")
+			if cpuStr, ok := usage["cpu"].(string); ok {
+				cpu += parseCPUMilli(cpuStr)
+			}
+			if memStr, ok := usage["memory"].(string); ok {
+				mem += parseMemBytes(memStr)
+			}
+		}
+		metrics[name] = PodMetric{CPUMilli: cpu, MemBytes: mem, Found: true}
+	}
+	return metrics
+}
+
+func parseCPUMilli(s string) int64 {
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		return 0
+	}
+	return q.MilliValue()
+}
+
+func parseMemBytes(s string) int64 {
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		return 0
+	}
+	return q.Value()
 }
 
 func ResolveKubeconfig(path string) string {

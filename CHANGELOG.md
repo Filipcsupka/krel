@@ -6,6 +6,19 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-14
+
+### Fixed
+
+- Relations pane could get stuck showing Details/YAML/Events instead of relations after navigating to a different resource; it now resets to the relations list on every selection change.
+- Resource list pane was too small (narrow + short) to show its header (context/namespace/kind) or enough rows; widened and given more height.
+- Status pane env output repeated `env: <container>/` as a prefix on every line; now a single `env:` header with variables grouped per container underneath.
+- Status pane had no coloring; problems now render in red, environment values in a distinct color, and pod/status health colors are preserved without breaking line-wrapping.
+
+### Added
+
+- Small Usage panel above Relations: CPU/memory gauges from metrics-server (when installed) plus requests/limits summed across the selected object's pods.
+
 ## [0.1.3] - 2026-08-14
 
 ### Added
@@ -49,7 +62,8 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 - Problem detection for missing references, Services selecting zero Pods, and unbound PVCs.
 - Non-interactive `why`, `refs`, and `problems` commands.
 
-[Unreleased]: https://github.com/Filipcsupka/krel/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/Filipcsupka/krel/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/Filipcsupka/krel/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Filipcsupka/krel/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Filipcsupka/krel/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Filipcsupka/krel/compare/v0.1.0...v0.1.1
