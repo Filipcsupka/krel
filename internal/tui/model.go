@@ -333,7 +333,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.namespacePicker = false
 				m.list = m.resourceList()
 				lw, lh := m.leftListSize()
-		m.list.SetSize(lw, lh)
+				m.list.SetSize(lw, lh)
 				m.status = ""
 			}
 			return m, nil
@@ -387,7 +387,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sortMode = nextAgeSortMode(m.sortMode)
 			m.list = m.resourceList()
 			lw, lh := m.leftListSize()
-		m.list.SetSize(lw, lh)
+			m.list.SetSize(lw, lh)
 			if m.sortMode == "" {
 				m.status = "sort: default"
 			} else {
@@ -583,7 +583,7 @@ func (m model) runCommand(command string) (tea.Model, tea.Cmd) {
 			m.namespacePicker = true
 			m.list = newNamespaceList(m.snapshot)
 			lw, lh := m.leftListSize()
-		m.list.SetSize(lw, lh)
+			m.list.SetSize(lw, lh)
 			m.status = "select namespace with enter, esc returns"
 			return m, nil
 		}
@@ -658,7 +658,7 @@ func (m model) runCommand(command string) (tea.Model, tea.Cmd) {
 			m.warningsOnly = kind == "Event"
 			m.list = m.resourceList()
 			lw, lh := m.leftListSize()
-		m.list.SetSize(lw, lh)
+			m.list.SetSize(lw, lh)
 			m.status = fmt.Sprintf("showing %s", kind)
 			return m, m.loadSelectedLogs()
 		}
@@ -668,7 +668,7 @@ func (m model) runCommand(command string) (tea.Model, tea.Cmd) {
 			m.warningsOnly = false
 			m.list = m.resourceList()
 			lw, lh := m.leftListSize()
-		m.list.SetSize(lw, lh)
+			m.list.SetSize(lw, lh)
 			m.status = "showing all loaded resources"
 			return m, m.loadSelectedLogs()
 		}
