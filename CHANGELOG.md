@@ -6,6 +6,11 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 
 ## [Unreleased]
 
+### Added
+
+- CI now runs `go vet`, race-enabled tests, and `govulncheck` alongside gofmt/build.
+- Releases are automatic: after CI passes on `main`, an Auto Tag workflow bumps the patch version and dispatches the Release build — no manual `git tag` for routine releases.
+
 ## [0.1.4] - 2026-08-14
 
 ### Fixed

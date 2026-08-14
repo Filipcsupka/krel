@@ -4,40 +4,47 @@ This project publishes release binaries through GitHub Actions.
 
 ## Versioning
 
-Use semantic version tags:
+Semantic version tags:
 
 ```text
 vMAJOR.MINOR.PATCH
 ```
 
-Example:
+## Automated releases
 
-```text
-v0.1.0
-```
+Releases are automatic. On every push to `main` (i.e. every merged PR):
 
-## Release Checklist
+1. **CI** (`.github/workflows/ci.yml`) runs gofmt check, `go vet`, race-enabled
+   tests, `govulncheck`, and a build.
+2. If CI succeeds, **Auto Tag** (`.github/workflows/auto-tag.yml`) bumps the
+   patch version from the latest `vX.Y.Z` tag and pushes the new tag. It
+   skips silently if the commit is already tagged.
+3. Pushing that tag would normally trigger **Release**
+   (`.github/workflows/release.yml`), but tags pushed with the default
+   `GITHUB_TOKEN` don't trigger other workflows (GitHub's loop-prevention
+   rule) — so Auto Tag explicitly dispatches Release for the new tag via
+   `gh workflow run release.yml --ref <tag>`.
+4. Release builds `krel_<os>_<arch>.tar.gz` for linux/darwin ×
+   amd64/arm64 and uploads them as GitHub release assets.
 
-1. Confirm CI is passing on `main`.
-2. Update `CHANGELOG.md`.
-3. Create an annotated tag.
-4. Push the tag.
-5. Confirm the Release workflow uploads all assets.
-6. Test the installer from a clean shell.
+Net effect: merge a PR to `main`, wait for CI + Auto Tag + Release to finish,
+and the new binary is live for the installer to pick up. No manual tagging
+needed for routine patch releases.
 
-## Commands
+## Manual releases (minor/major bumps, or off-schedule)
 
-Create and push a release tag:
+Create and push a tag yourself; Release still triggers normally since this
+push isn't going through the auto-tag bot:
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 ```
 
 Verify release assets:
 
 ```bash
-gh release view v0.1.0
+gh release view v0.2.0
 ```
 
 Test the installer:
