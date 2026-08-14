@@ -20,7 +20,7 @@ type pane int
 const (
 	paneResources pane = iota
 	paneRelations
-	paneDetails
+	paneLogs
 )
 
 type model struct {
@@ -47,6 +47,9 @@ type model struct {
 	logPrevious     bool
 	logTimestamps   bool
 	logSince        time.Duration
+	logScroll       int
+	logSearch       string
+	logSearchMode   bool
 }
 
 type reloadResult struct {
@@ -261,6 +264,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.commandMode {
 			return m.updateCommand(msg)
 		}
+		if m.logSearchMode {
+			return m.updateLogSearch(msg)
+		}
+		if m.active == paneLogs {
+			switch msg.String() {
+			case "/":
+				m.logSearchMode = true
+				m.command = ""
+				return m, nil
+			case "n":
+				m.jumpToLogMatch(1)
+				return m, nil
+			case "N":
+				m.jumpToLogMatch(-1)
+				return m, nil
+			case "j", "down":
+				if max := len(m.logLines) - 1; m.logScroll < max {
+					m.logScroll++
+				}
+				return m, nil
+			case "k", "up":
+				if m.logScroll > 0 {
+					m.logScroll--
+				}
+				return m, nil
+			case "G":
+				m.logScroll = 0
+				m.status = "log tail: live"
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -359,6 +393,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if before != after {
 		m.logLines = nil
 		m.logErr = ""
+		m.logScroll = 0
 		return m, tea.Batch(cmd, m.loadSelectedLogs())
 	}
 	return m, cmd
@@ -384,6 +419,54 @@ func (m model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m model) updateLogSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.logSearchMode = false
+		m.command = ""
+	case "enter":
+		m.logSearchMode = false
+		m.logSearch = strings.TrimSpace(m.command)
+		m.command = ""
+		if m.logSearch == "" {
+			m.status = "log search cleared"
+			return m, nil
+		}
+		m.status = "log search: " + m.logSearch
+		m.jumpToLogMatch(1)
+	case "backspace":
+		if len(m.command) > 0 {
+			m.command = m.command[:len(m.command)-1]
+		}
+	default:
+		if len(msg.Runes) > 0 {
+			m.command += string(msg.Runes)
+		}
+	}
+	return m, nil
+}
+
+func (m *model) jumpToLogMatch(direction int) {
+	if m.logSearch == "" || len(m.logLines) == 0 {
+		return
+	}
+	needle := strings.ToLower(m.logSearch)
+	n := len(m.logLines)
+	current := n - 1 - m.logScroll
+	for step := 1; step <= n; step++ {
+		idx := current + direction*step
+		if idx < 0 || idx >= n {
+			continue
+		}
+		if strings.Contains(strings.ToLower(m.logLines[idx]), needle) {
+			m.logScroll = n - 1 - idx
+			m.status = fmt.Sprintf("log search: %s (line %d/%d)", m.logSearch, idx+1, n)
+			return
+		}
+	}
+	m.status = "log search: no match for " + m.logSearch
 }
 
 func (m model) runCommand(command string) (tea.Model, tea.Cmd) {
@@ -652,10 +735,7 @@ func (m model) rightView(width, height int) string {
 	}
 
 	contentBudget := max(4, height-4)
-	topHeight := max(7, contentBudget/3)
-	if topHeight > contentBudget-4 {
-		topHeight = max(2, contentBudget-4)
-	}
+	topHeight := max(4, contentBudget/2)
 	logHeight := max(2, contentBudget-topHeight)
 	body := workloadSummaryView(m.snapshot.Graph, obj)
 	title := "Summary"
@@ -679,7 +759,7 @@ func (m model) rightView(width, height int) string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		paneTitle(title, body, width, topHeight, m.active == paneRelations),
-		paneTitle("Logs", logs, width, logHeight, false),
+		paneTitle("Logs", logs, width, logHeight, m.active == paneLogs),
 	)
 }
 
@@ -1303,7 +1383,13 @@ func (m model) logsView(width, maxLines int) string {
 	if m.logSince > 0 {
 		header += " since=" + m.logSince.String()
 	}
-	lines := wrapLine(header+"  space pause  P previous  t timestamps  w wrap  :grep  :since", width)
+	if m.logSearch != "" {
+		header += " /" + m.logSearch
+	}
+	if m.logScroll > 0 {
+		header += fmt.Sprintf(" scrolled:-%d", m.logScroll)
+	}
+	lines := wrapLine(header+"  j/k scroll  G live  / search  n/N next  space pause", width)
 	if m.logErr != "" {
 		lines = appendPanelLines(lines, []string{"error: " + m.logErr}, width, maxLines)
 		return strings.Join(limitTail(lines, maxLines), "\n")
@@ -1312,21 +1398,54 @@ func (m model) logsView(width, maxLines int) string {
 		lines = appendPanelLines(lines, []string{"Loading logs..."}, width, maxLines)
 		return strings.Join(lines, "\n")
 	}
-	logs := m.logLines
+	end := len(m.logLines) - m.logScroll
+	if end < 1 {
+		end = 1
+	}
+	logs := m.logLines[:end]
 	if len(logs) > maxLines-1 {
 		logs = logs[len(logs)-(maxLines-1):]
 	}
 	for _, line := range logs {
+		rendered := highlightLogLine(line, m.logSearch)
 		if m.logWrap {
-			lines = append(lines, wrapLine(line, width)...)
+			lines = append(lines, wrapLine(rendered, width)...)
 		} else {
-			lines = append(lines, truncateText(line, width))
+			lines = append(lines, truncateText(rendered, width))
 		}
 		if len(lines) >= maxLines {
 			break
 		}
 	}
 	return strings.Join(limitTail(lines, maxLines), "\n")
+}
+
+var logSearchHighlight = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("214")).Bold(true)
+
+func highlightLogLine(line, needle string) string {
+	if needle == "" {
+		return line
+	}
+	lower := strings.ToLower(line)
+	target := strings.ToLower(needle)
+	idx := strings.Index(lower, target)
+	if idx < 0 {
+		return line
+	}
+	var b strings.Builder
+	rest := line
+	for {
+		lowerRest := strings.ToLower(rest)
+		i := strings.Index(lowerRest, target)
+		if i < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:i])
+		b.WriteString(logSearchHighlight.Render(rest[i : i+len(needle)]))
+		rest = rest[i+len(needle):]
+	}
+	return b.String()
 }
 
 func (m model) selectedPrefersPreviousLogs() bool {
@@ -1369,9 +1488,10 @@ func problemsView(g *graph.Graph, obj graph.Object) string {
 
 func helpView() string {
 	return strings.Join([]string{
-		"tab  switch pane",
-		"/    filter resources",
+		"tab  switch pane (resources/relations/logs)",
+		"/    filter resources, or search logs when Logs pane active",
 		":    command mode",
+		"logs pane: j/k or ↑/↓ scroll, G jump to live tail, n/N next/prev search match",
 		":q / ctrl-c quit",
 		":pod :svc :deploy :sts :ds :job :cj :cm :secret :pvc :all",
 		":node :events :hpa :np :pdb :quota :cert",
@@ -1400,6 +1520,9 @@ func (m model) footer() string {
 	text := m.status
 	if m.commandMode {
 		text = ":" + m.command
+	}
+	if m.logSearchMode {
+		text = "/" + m.command
 	}
 	if text == "" {
 		text = ":pod :deploy :sts :ds :job :cj :svc :node :events  A age-sort  :grep :since  space pause  P prev  t ts  w wrap  :q"
