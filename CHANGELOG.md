@@ -6,6 +6,12 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 
 ## [Unreleased]
 
+### Added
+
+- CI now runs `go vet`, race-enabled tests, and an informational `govulncheck` pass (reports, doesn't block on stdlib/toolchain-lag CVEs) alongside gofmt/build.
+- Bumped `go.mod` to `go 1.26.2` and `golang.org/x/net` to v0.58.0 to close the vulnerabilities that were actually fixable from this repo.
+- Releases are automatic: after CI passes on `main`, an Auto Tag workflow bumps the patch version and dispatches the Release build — no manual `git tag` for routine releases.
+
 ## [0.1.4] - 2026-08-14
 
 ### Fixed

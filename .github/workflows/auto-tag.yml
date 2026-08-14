@@ -1,0 +1,63 @@
+name: Auto Tag
+
+# Runs after CI finishes on main. If CI passed and this commit isn't tagged
+# yet, bump the patch version and push a new vMAJOR.MINOR.PATCH tag. That
+# tag push is what triggers the Release workflow.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Compute and push next tag
+        run: |
+          set -eu
+          git fetch --tags
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            next="v0.1.0"
+          else
+            version=${latest#v}
+            major=${version%%.*}
+            rest=${version#*.}
+            minor=${rest%%.*}
+            patch=${rest#*.}
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+
+          if git rev-parse "$next" >/dev/null 2>&1; then
+            echo "tag $next already exists, skipping"
+            exit 0
+          fi
+          if [ -n "$latest" ] && [ "$(git rev-list -n1 "$latest")" = "$(git rev-parse HEAD)" ]; then
+            echo "HEAD is already tagged ($latest), skipping"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$next" -m "$next"
+          git push origin "$next"
+          echo "pushed $next"
+
+          # A tag pushed with the default GITHUB_TOKEN does not itself
+          # trigger other workflows (loop prevention), so explicitly
+          # dispatch Release for the new tag.
+          gh workflow run release.yml --ref "$next"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
