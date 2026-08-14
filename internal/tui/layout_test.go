@@ -22,7 +22,7 @@ func TestLayoutFitsTerminal(t *testing.T) {
 	m.snapshot.Graph = graph.New(m.snapshot.Graph.Objects, nil, nil)
 	m.list = newResourceList(m.snapshot, "Pod")
 
-	for _, size := range []struct{ w, h int }{{160, 45}, {200, 60}, {80, 24}} {
+	for _, size := range []struct{ w, h int }{{160, 45}, {200, 60}, {80, 24}, {90, 15}, {220, 90}, {100, 30}} {
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.w, Height: size.h})
 		got := updated.(model)
 		lines := strings.Split(got.View(), "\n")

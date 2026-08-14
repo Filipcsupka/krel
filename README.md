@@ -121,11 +121,13 @@ Kubeconfig loading follows standard Kubernetes client behavior:
 
 ## Layout
 
+Left and right columns each take half the screen width:
+
 - top-left: resource list
-- bottom-left: Status — health, why it's failing (problems), recent events, environment values (grouped by container)
-- top-right, small strip: Usage — CPU/memory gauges from metrics-server when available, plus requests/limits
-- top-right: Relations — Services, ConfigMaps, Secrets, ServiceAccounts, PVCs, and other refs for the selected object. Clickable: `j`/`k` to move, `enter` opens the referenced object's values in-place.
-- bottom-right: Logs — stays visible, follows the selected object regardless of pane
+- bottom-left: Logs — stays visible, follows the selected object regardless of pane
+- top-right, small strip: Usage — 2 lines (cpu, mem), each a gauge from metrics-server when available plus requests/limits, and a `|`-separated extra field (pod/restart count, node placement)
+- right, below Usage: Relations — Services, ConfigMaps, Secrets, ServiceAccounts, PVCs, and other refs for the selected object. Clickable: `j`/`k` to move, `enter` opens the referenced object's values in-place, `esc` returns to the relations list.
+- bottom-right, the largest pane: Status — why it's failing (problems), non-Ready `status.conditions` (covers Nodes, Certificates, HPAs, and most CRDs that follow the conditions convention), recent events, then environment values grouped by container. Scrollable with `j`/`k`.
 
 The Relations pane resets to the relations list whenever you move to a different resource, even if you'd switched it to Details/YAML/Events/Problems.
 
@@ -134,7 +136,7 @@ The Relations pane resets to the relations list whenever you move to a different
 | Key | Action |
 | --- | --- |
 | `/` | Filter resources, or search logs when the Logs pane is active |
-| `tab` | Switch pane (resources / status / relations / logs) |
+| `tab` | Switch pane (resources / logs / relations / status) |
 | `:` | Command mode |
 | `j` / `k` (relations pane) | Move between relations |
 | `enter` (relations pane) | Open the selected relation's values |
