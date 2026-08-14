@@ -121,12 +121,13 @@ Kubeconfig loading follows standard Kubernetes client behavior:
 
 ## Layout
 
-Four panes:
-
 - top-left: resource list
-- bottom-left: Status — health, why it's failing (problems), recent events, environment values
+- bottom-left: Status — health, why it's failing (problems), recent events, environment values (grouped by container)
+- top-right, small strip: Usage — CPU/memory gauges from metrics-server when available, plus requests/limits
 - top-right: Relations — Services, ConfigMaps, Secrets, ServiceAccounts, PVCs, and other refs for the selected object. Clickable: `j`/`k` to move, `enter` opens the referenced object's values in-place.
 - bottom-right: Logs — stays visible, follows the selected object regardless of pane
+
+The Relations pane resets to the relations list whenever you move to a different resource, even if you'd switched it to Details/YAML/Events/Problems.
 
 ## Keyboard
 
