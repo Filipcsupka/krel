@@ -6,6 +6,13 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 
 ## [Unreleased]
 
+### Fixed
+
+- Every bordered pane rendered 2 rows taller than requested (lipgloss `Height()` sets content height; the border adds 2 more on top of that). With 5 stacked panes this compounded enough to push the resource list header and the Usage panel off the top of the terminal. Fixed at the source in the shared pane renderers; added a regression test that drives `View()` at several terminal sizes and fails if it ever overflows again.
+- The resource list pane was sized wider than its padded content area, so bubbles' list component wrapped its own rows and silently grew taller than its box — same overflow, different cause. List content is now sized to match the actual padded area.
+- Opening a Secret/ConfigMap/etc. from the Relations pane left it stuck on the opened object's YAML with no way back; `esc` now returns the Relations pane to its default relations list.
+- `r`/`d`/`y`/`e`/`p` now also move keyboard focus to the Relations pane, so you don't have to separately `tab` to it before the pane responds to `j`/`k`/`enter`. The Relations pane's title also shows its keybindings while focused.
+
 ## [0.1.4] - 2026-08-14
 
 ### Fixed
