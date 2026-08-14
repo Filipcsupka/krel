@@ -119,13 +119,25 @@ Kubeconfig loading follows standard Kubernetes client behavior:
 - `--kubeconfig <path>` overrides the default loading rules
 - `--context <name>` starts directly on that context
 
+## Layout
+
+Four panes:
+
+- top-left: resource list
+- bottom-left: Status — health, why it's failing (problems), recent events, environment values
+- top-right: Relations — Services, ConfigMaps, Secrets, ServiceAccounts, PVCs, and other refs for the selected object. Clickable: `j`/`k` to move, `enter` opens the referenced object's values in-place.
+- bottom-right: Logs — stays visible, follows the selected object regardless of pane
+
 ## Keyboard
 
 | Key | Action |
 | --- | --- |
-| `/` | Filter resources |
-| `tab` | Switch pane |
+| `/` | Filter resources, or search logs when the Logs pane is active |
+| `tab` | Switch pane (resources / status / relations / logs) |
 | `:` | Command mode |
+| `j` / `k` (relations pane) | Move between relations |
+| `enter` (relations pane) | Open the selected relation's values |
+| `j` / `k` (logs pane) | Scroll logs, `G` returns to the live tail |
 | `r` | Relations view |
 | `d` | Details view |
 | `y` | YAML view |

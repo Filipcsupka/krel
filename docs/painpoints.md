@@ -26,7 +26,7 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
    Needs the problem detector to walk the graph one hop from a failing pod
    and surface the most likely upstream cause, not just the symptom.
 
-## UX fixes in progress (this branch)
+## UX fixes shipped
 
 - Log/detail split was 1/3 top, 2/3 log — flipped to 50/50 so logs get more
   room without shrinking context panel to nothing.
@@ -36,7 +36,14 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
   k9s-style rows.
 - Logs pane was not focusable/scrollable — now a tab-able pane with j/k or
   arrow scroll, `G` to jump back to live tail (autoscroll), and `/` full-text
-  search with `n`/`N` to step between matches.
+  search with `n`/`N` to step between matches. Log lines no longer repeat the
+  pod/container name on every line; the leading timestamp renders in its own
+  color instead.
+- Single Summary panel (status + pods + relations + problems + events all
+  mixed together) split into a 4-pane layout: resource list, a Status pane
+  (health, problems, recent events, env values), a Relations pane (Services,
+  ConfigMaps, Secrets, ServiceAccounts, PVCs — `j`/`k`/`enter` to open one and
+  see its values), and a Logs pane that stays visible across all of it.
 
 ## Non-goals (unchanged)
 
