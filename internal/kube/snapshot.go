@@ -84,18 +84,21 @@ var phaseOneResources = []resourceDef{
 	{schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "subscriptions"}, "Subscription", true},
 	{schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "installplans"}, "InstallPlan", true},
 	{schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "clusterserviceversions"}, "ClusterServiceVersion", true},
+	{schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}, "Application", true},
 }
 
 // optionalResourceKinds are fetched best-effort: their CRDs don't exist on
-// every cluster (OLM's operators.coreos.com group is OpenShift/OLM-only), so
-// a "the server could not find the requested resource" error just means
-// this cluster doesn't have that CRD installed — not worth surfacing as a
-// load error on every snapshot for every non-OLM user. A real error against
+// every cluster (OLM's operators.coreos.com group is OpenShift/OLM-only,
+// ArgoCD's argoproj.io group only exists where ArgoCD is installed), so a
+// "the server could not find the requested resource" error just means this
+// cluster doesn't have that CRD installed — not worth surfacing as a load
+// error on every snapshot for every user without it. A real error against
 // one of these kinds (e.g. RBAC denial) still gets recorded.
 var optionalResourceKinds = map[string]bool{
 	"Subscription":          true,
 	"InstallPlan":           true,
 	"ClusterServiceVersion": true,
+	"Application":           true,
 }
 
 // isBenignMissingResource reports whether err represents an optional kind's
