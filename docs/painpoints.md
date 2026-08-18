@@ -59,6 +59,12 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
   by the snapshot loader (best-effort — clusters without OLM's CRDs just get
   an empty OLM segment, no load error), so the OLM chain populates on
   OpenShift/OLM clusters.
+- ArgoCD `Application` is now a real chain node too, not just the
+  `managed-by:` label line — fetched best-effort (same benign-skip as OLM on
+  clusters without ArgoCD's CRDs) and linked via the
+  `argocd.argoproj.io/instance` label every object it manages already
+  carries. Shows as `application: <name> (sync:... health:...)` prepended
+  to the chain.
 
 ## Non-goals (unchanged)
 

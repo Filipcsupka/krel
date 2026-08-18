@@ -193,6 +193,33 @@ func TestOwnerChainWalksOwnerReferences(t *testing.T) {
 	}
 }
 
+func TestOwnerChainPrependsArgoApplication(t *testing.T) {
+	app := testObject("Application", "argocd", "billing-app")
+
+	deploy := testObjectWithRaw("Deployment", "argocd", "billing-app", map[string]any{
+		"metadata": map[string]any{"labels": map[string]any{"argocd.argoproj.io/instance": "billing-app"}},
+	})
+	deploy.Ref.UID = "deploy-uid"
+	deploy.Raw.SetUID(deploy.Ref.UID)
+
+	pod := testObject("Pod", "argocd", "billing-app-xyz")
+	pod.Raw.SetOwnerReferences([]metav1.OwnerReference{{Kind: "Deployment", Name: "billing-app", UID: deploy.Ref.UID}})
+
+	g := graph.Build([]graph.Object{app, deploy, pod})
+	podObj, _ := g.ObjectByKey(pod.Ref.Key())
+
+	chain := ownerChain(g, podObj)
+	if len(chain) != 3 {
+		t.Fatalf("expected 3-object chain, got %d: %+v", len(chain), chain)
+	}
+	if chain[0].Ref.Kind != "Application" || chain[0].Ref.Name != "billing-app" {
+		t.Fatalf("expected chain to start with the Application, got %s/%s", chain[0].Ref.Kind, chain[0].Ref.Name)
+	}
+	if chain[1].Ref.Kind != "Deployment" || chain[2].Ref.Kind != "Pod" {
+		t.Fatalf("expected Application -> Deployment -> Pod order, got %s -> %s -> %s", chain[0].Ref.Kind, chain[1].Ref.Kind, chain[2].Ref.Kind)
+	}
+}
+
 func TestGitopsManagedByLine(t *testing.T) {
 	obj := testObject("Deployment", "app", "api")
 	obj.Raw.SetLabels(map[string]string{"argocd.argoproj.io/instance": "my-app"})

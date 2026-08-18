@@ -107,6 +107,32 @@ func TestBuildOLMChainEdges(t *testing.T) {
 	}
 }
 
+func TestBuildArgoApplicationEdges(t *testing.T) {
+	app := testObject("Application", "argocd", "billing-app", "app-1", nil)
+	managed := testObject("Deployment", "argocd", "billing-app", "deploy-1", map[string]any{
+		"metadata": map[string]any{"labels": map[string]any{"argocd.argoproj.io/instance": "billing-app"}},
+	})
+	unlabeled := testObject("Deployment", "argocd", "other-app", "deploy-2", nil)
+	orphanLabel := testObject("Deployment", "argocd", "orphan", "deploy-3", map[string]any{
+		"metadata": map[string]any{"labels": map[string]any{"argocd.argoproj.io/instance": "no-such-application"}},
+	})
+
+	g := Build([]Object{app, managed, unlabeled, orphanLabel})
+
+	if !hasEdge(g.Edges, app.Ref, managed.Ref, "Manages") {
+		t.Fatalf("expected Application to manage labeled Deployment, got %#v", g.Edges)
+	}
+	if hasEdge(g.Edges, app.Ref, unlabeled.Ref, "Manages") {
+		t.Fatalf("did not expect an edge to an unlabeled Deployment, got %#v", g.Edges)
+	}
+	if len(g.EdgesFor(orphanLabel.Ref)) != 0 {
+		t.Fatalf("expected no edges for a label with no matching Application, got %#v", g.EdgesFor(orphanLabel.Ref))
+	}
+	if len(g.ProblemsFor(orphanLabel.Ref)) != 0 {
+		t.Fatalf("expected no problem raised for an unresolved argocd.argoproj.io/instance label, got %#v", g.ProblemsFor(orphanLabel.Ref))
+	}
+}
+
 func testObject(kind, namespace, name, uid string, extra map[string]any) Object {
 	raw := map[string]any{
 		"apiVersion": "v1",

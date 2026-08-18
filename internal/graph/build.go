@@ -101,6 +101,8 @@ func Build(objects []Object) *Graph {
 			edges = appendSubscriptionEdges(edges, obj, index)
 		case "InstallPlan":
 			edges = appendInstallPlanEdges(edges, obj, index)
+		case "Application":
+			edges = appendArgoApplicationEdges(edges, obj, objects)
 		}
 	}
 
@@ -420,6 +422,33 @@ func appendInstallPlanEdges(edges []Edge, plan Object, index map[string]Object) 
 		if to, ok := index[(ObjectRef{Kind: "ClusterServiceVersion", Namespace: plan.Ref.Namespace, Name: name}).Key()]; ok {
 			edges = append(edges, Edge{From: plan.Ref, To: to.Ref, Type: "Installs", Health: "Healthy", Source: "spec.clusterServiceVersionNames", Reason: "InstallPlan installs this ClusterServiceVersion."})
 		}
+	}
+	return edges
+}
+
+// argoInstanceLabel is the label ArgoCD stamps on every object it manages,
+// naming the Application that owns it — the same label
+// gitopsManagedByLine (internal/tui/model.go) already reads for the
+// "managed-by: argocd" line. Reused here so the label key lives in exactly
+// one place... except it doesn't; kept as a literal in both packages since
+// graph doesn't import tui and there's no shared constants file yet.
+const argoInstanceLabel = "argocd.argoproj.io/instance"
+
+// appendArgoApplicationEdges links an ArgoCD Application to every
+// same-namespace object carrying its argocd.argoproj.io/instance label —
+// that label is how ArgoCD itself tracks ownership, there's no ownerRef or
+// spec field to read. No problem is raised when nothing matches (a fresh
+// Application that hasn't synced yet, or whose managed objects live in a
+// namespace this snapshot didn't load).
+func appendArgoApplicationEdges(edges []Edge, app Object, objects []Object) []Edge {
+	for _, obj := range objects {
+		if obj.Ref.Kind == "Application" || obj.Ref.Namespace != app.Ref.Namespace {
+			continue
+		}
+		if obj.Raw.GetLabels()[argoInstanceLabel] != app.Ref.Name {
+			continue
+		}
+		edges = append(edges, Edge{From: app.Ref, To: obj.Ref, Type: "Manages", Health: "Healthy", Source: "labels." + argoInstanceLabel, Reason: "ArgoCD Application manages this object."})
 	}
 	return edges
 }

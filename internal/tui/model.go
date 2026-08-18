@@ -753,7 +753,31 @@ func ownerChain(g *graph.Graph, obj graph.Object) []graph.Object {
 		chain = append([]graph.Object{owner}, chain...)
 		current = owner
 	}
+
+	// Finally, if the topmost object reached above carries ArgoCD's
+	// argocd.argoproj.io/instance label (checked via the same "Manages"
+	// edge internal/graph/build.go's appendArgoApplicationEdges builds) and
+	// that Application is loaded, prepend it too. This is independent of
+	// the OLM walk above — a chain can end in either an Application, a
+	// Subscription, or nothing further, never both an Application and an
+	// OLM ancestor at once in practice, but the two blocks don't assume
+	// that; each just no-ops if its edge type isn't present.
+	if app, ok := findArgoApplication(g, chain[0].Ref); ok && !seen[app.Ref.Key()] {
+		chain = append([]graph.Object{app}, chain...)
+	}
 	return chain
+}
+
+// findArgoApplication looks up the ArgoCD Application managing ref via the
+// graph's "Manages" edge (built from the argocd.argoproj.io/instance
+// label), when that Application object is loaded in the snapshot.
+func findArgoApplication(g *graph.Graph, ref graph.ObjectRef) (graph.Object, bool) {
+	for _, edge := range g.EdgesFor(ref) {
+		if edge.Type == "Manages" && edge.To.Key() == ref.Key() {
+			return g.ObjectByKey(edge.From.Key())
+		}
+	}
+	return graph.Object{}, false
 }
 
 func findOwner(g *graph.Graph, ref graph.ObjectRef) (graph.Object, bool) {
@@ -906,6 +930,12 @@ func chainDisplayLabel(obj graph.Object, current bool) string {
 		if phase, _, _ := unstructuredNestedString(obj, "status", "phase"); phase != "" {
 			extra = " (" + phase + ")"
 		}
+	case "Application":
+		sync, _, _ := unstructuredNestedString(obj, "status", "sync", "status")
+		health, _, _ := unstructuredNestedString(obj, "status", "health", "status")
+		if sync != "" || health != "" {
+			extra = fmt.Sprintf(" (sync:%s health:%s)", orDash(sync), orDash(health))
+		}
 	}
 	line := kind + ": " + obj.Ref.Name + extra
 	if current {
@@ -922,9 +952,18 @@ func chainKindLabel(kind string) string {
 		return "subscription"
 	case "InstallPlan":
 		return "installplan"
+	case "Application":
+		return "application"
 	default:
 		return summaryKind(kind)
 	}
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 func (m *model) jumpToLogMatch(direction int) {
