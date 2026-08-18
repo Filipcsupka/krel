@@ -78,7 +78,7 @@ kr --kubeconfig ~/.kube/config --namespace apps
 
 ## Navigate
 
-Use `/` to filter resources, `tab` to switch panes, and the view keys to change the focused panel:
+Use `/` to filter resources, `tab` to switch panes, `l` for fullscreen logs of the selected resource (`esc` or `l` to return), and the view keys to change the focused panel:
 
 ```text
 r relations
@@ -87,6 +87,11 @@ y YAML
 e events
 p problems
 ```
+
+The bottom-left pane shows the Owner Chain: `metadata.ownerReferences` walked
+up from the selected object, extended through OLM's Subscription -> InstallPlan
+-> ClusterServiceVersion and an ArgoCD Application node when present. `j`/`k`
+moves between owners, `enter` opens the selected one.
 
 Use `:` for command mode:
 
