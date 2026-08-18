@@ -5,8 +5,6 @@
 ## Near Term
 
 - Improve graph coverage for more Kubernetes resource kinds
-- Fetch OLM resources (Subscription, InstallPlan, ClusterServiceVersion) so
-  the Owner Chain pane's OLM segment actually populates on OpenShift
 - exec and port-forward, so krel can be a daily-driver terminal tool
   alongside kubectl/k9s, not just a read-only relationship inspector
 - Add richer problem checks for common workload and networking issues
