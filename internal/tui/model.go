@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ type pane int
 // top-right, bottom-right.
 const (
 	paneResources pane = iota
-	paneLogs
+	paneChain
 	paneRelations
 	paneStatus
 	paneCount
@@ -57,6 +58,8 @@ type model struct {
 	logSearchMode   bool
 	summaryCursor   int
 	statusScroll    int
+	chainCursor     int
+	logsFullscreen  bool
 }
 
 type reloadResult struct {
@@ -128,7 +131,7 @@ func newResourceList(snapshot kube.Snapshot, kinds ...string) list.Model {
 	}
 	sortItems(items, sortMode)
 	l := list.New(items, resourceDelegate{}, 34, 20)
-	title := fmt.Sprintf("ctx: %s  ns: %s", snapshot.Context, snapshot.Namespace)
+	title := fmt.Sprintf("config: %s  ctx: %s  ns: %s", configLabel(snapshot), snapshot.Context, snapshot.Namespace)
 	if kind != "" {
 		title += "  kind: " + kind
 	}
@@ -143,6 +146,19 @@ func newResourceList(snapshot kube.Snapshot, kinds ...string) list.Model {
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
 	return l
+}
+
+// configLabel is the short name shown in the top crumb for the active
+// kubeconfig: the file's basename without extension (e.g. "pft" for
+// ~/.kube/pft.yaml), or "default" when no explicit kubeconfig path was
+// given (client-go's default loading rules: $KUBECONFIG or ~/.kube/config).
+func configLabel(snapshot kube.Snapshot) string {
+	path := snapshot.Options.Kubeconfig
+	if path == "" {
+		return "default"
+	}
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 func warningFilter(enabled bool) string {
@@ -186,7 +202,7 @@ func newNamespaceList(snapshot kube.Snapshot) list.Model {
 		items = append(items, namespaceItem{name: namespace, current: namespace == snapshot.Namespace})
 	}
 	l := list.New(items, list.NewDefaultDelegate(), 34, 20)
-	l.Title = fmt.Sprintf("ctx: %s  namespaces", snapshot.Context)
+	l.Title = fmt.Sprintf("config: %s  ctx: %s  namespaces", configLabel(snapshot), snapshot.Context)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
@@ -300,8 +316,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.logSearchMode {
 			return m.updateLogSearch(msg)
 		}
-		if m.active == paneLogs {
+		if m.logsFullscreen {
 			switch msg.String() {
+			case "esc", "l":
+				m.logsFullscreen = false
+				m.status = ""
+				return m, nil
 			case "/":
 				m.logSearchMode = true
 				m.command = ""
@@ -312,12 +332,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "N":
 				m.jumpToLogMatch(-1)
 				return m, nil
-			case "j", "down":
+			// Scroll offset counts back from the tail: k/up moves further
+			// into history (increments), j/down moves back toward the live
+			// tail (decrements) until it re-reaches 0, matching the
+			// "logScroll == 0 means following" convention logsView renders.
+			case "k", "up":
 				if max := len(m.logLines) - 1; m.logScroll < max {
 					m.logScroll++
 				}
 				return m, nil
-			case "k", "up":
+			case "j", "down":
 				if m.logScroll > 0 {
 					m.logScroll--
 				}
@@ -328,7 +352,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if !m.namespacePicker && m.active == paneRelations && m.mode == "relations" {
+		if !m.namespacePicker && !m.logsFullscreen && m.active == paneChain {
+			switch msg.String() {
+			case "j", "down":
+				if navIndexes := m.chainNavIndexes(); m.chainCursor < len(navIndexes)-1 {
+					m.chainCursor++
+				}
+				return m, nil
+			case "k", "up":
+				if m.chainCursor > 0 {
+					m.chainCursor--
+				}
+				return m, nil
+			case "enter":
+				return m.jumpToChainRef()
+			}
+		}
+		if !m.namespacePicker && !m.logsFullscreen && m.active == paneRelations && m.mode == "relations" {
 			switch msg.String() {
 			case "j", "down":
 				if navIndexes := m.summaryNavIndexes(); m.summaryCursor < len(navIndexes)-1 {
@@ -344,7 +384,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.jumpToSummaryRef()
 			}
 		}
-		if m.active == paneStatus {
+		if !m.logsFullscreen && m.active == paneStatus {
 			switch msg.String() {
 			case "j", "down":
 				if obj, ok := m.selected(); ok {
@@ -383,6 +423,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "backspace":
+			return m, nil
+		case "l":
+			if m.namespacePicker {
+				return m, nil
+			}
+			m.logsFullscreen = true
+			m.logScroll = 0
+			m.status = ""
 			return m, nil
 		case "enter":
 			if m.namespacePicker {
@@ -479,6 +527,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logScroll = 0
 		m.summaryCursor = 0
 		m.statusScroll = 0
+		m.chainCursor = 0
 		m.mode = "relations"
 		return m, tea.Batch(cmd, m.loadSelectedLogs())
 	}
@@ -589,6 +638,239 @@ func (m model) jumpToSummaryRef() (tea.Model, tea.Cmd) {
 	m.logScroll = 0
 	m.status = "opened " + ref.Label()
 	return m, m.loadSelectedLogs()
+}
+
+func (m model) chainNavIndexes() []int {
+	obj, ok := m.selected()
+	if !ok {
+		return nil
+	}
+	chain := ownerChain(m.snapshot.Graph, obj)
+	indexes := make([]int, len(chain))
+	for i := range chain {
+		indexes[i] = i
+	}
+	return indexes
+}
+
+func (m model) jumpToChainRef() (tea.Model, tea.Cmd) {
+	obj, ok := m.selected()
+	if !ok {
+		return m, nil
+	}
+	chain := ownerChain(m.snapshot.Graph, obj)
+	if len(chain) == 0 {
+		return m, nil
+	}
+	cursor := m.chainCursor
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(chain) {
+		cursor = len(chain) - 1
+	}
+	ref := chain[cursor].Ref
+	m.resourceKind = ref.Kind
+	m.warningsOnly = false
+	m.list = m.resourceList()
+	lw, lh := m.leftListSize()
+	m.list.SetSize(lw, lh)
+	for i, listItem := range m.list.Items() {
+		if it, ok := listItem.(item); ok && it.obj.Ref.Key() == ref.Key() {
+			m.list.Select(i)
+			break
+		}
+	}
+	m.mode = "yaml"
+	m.chainCursor = 0
+	m.logLines = nil
+	m.logErr = ""
+	m.logScroll = 0
+	m.status = "opened " + ref.Label()
+	return m, m.loadSelectedLogs()
+}
+
+// ownerChain walks metadata.ownerReferences generically (via the graph's
+// "Owns" edges, built once in graph.Build for every object regardless of
+// kind) from obj up to its topmost loaded owner, top-down: [topmost owner,
+// ..., obj]. Typical results: Pod -> ReplicaSet -> Deployment, or
+// Pod -> Job -> CronJob.
+//
+// When the topmost owner carries OLM's "olm.owner"/"olm.owner.namespace"
+// annotations (set by OLM on the Deployments it manages) and that owner
+// (usually a ClusterServiceVersion) happens to be loaded in the graph, the
+// walk continues upward through it too — surfacing
+// Subscription -> InstallPlan -> CSV -> Deployment -> ... -> Pod. OLM kinds
+// aren't fetched by internal/kube/snapshot.go today, so on most clusters
+// this simply finds nothing past the workload chain and degrades to the
+// plain owner chain.
+func ownerChain(g *graph.Graph, obj graph.Object) []graph.Object {
+	chain := []graph.Object{obj}
+	seen := map[string]bool{obj.Ref.Key(): true}
+	current := obj
+	for i := 0; i < 12; i++ {
+		owner, ok := findOwner(g, current.Ref)
+		if !ok || seen[owner.Ref.Key()] {
+			break
+		}
+		seen[owner.Ref.Key()] = true
+		chain = append(chain, owner)
+		current = owner
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+
+	if csv, ok := olmOwnerFromAnnotations(g, chain[0]); ok && !seen[csv.Ref.Key()] {
+		chain = append([]graph.Object{csv}, chain...)
+		seen[csv.Ref.Key()] = true
+		current = csv
+		for i := 0; i < 12; i++ {
+			owner, ok := findOwner(g, current.Ref)
+			if !ok || seen[owner.Ref.Key()] {
+				break
+			}
+			seen[owner.Ref.Key()] = true
+			chain = append([]graph.Object{owner}, chain...)
+			current = owner
+		}
+	}
+	return chain
+}
+
+func findOwner(g *graph.Graph, ref graph.ObjectRef) (graph.Object, bool) {
+	for _, edge := range g.EdgesFor(ref) {
+		if edge.Type == "Owns" && edge.To.Key() == ref.Key() {
+			return g.ObjectByKey(edge.From.Key())
+		}
+	}
+	return graph.Object{}, false
+}
+
+// olmOwnerFromAnnotations looks up the ClusterServiceVersion (or whatever
+// olm.owner.kind names) referenced by OLM's olm.owner annotations, when
+// that object happens to be present in the loaded graph.
+func olmOwnerFromAnnotations(g *graph.Graph, obj graph.Object) (graph.Object, bool) {
+	annotations := obj.Raw.GetAnnotations()
+	name := annotations["olm.owner"]
+	if name == "" {
+		return graph.Object{}, false
+	}
+	namespace := annotations["olm.owner.namespace"]
+	if namespace == "" {
+		namespace = obj.Ref.Namespace
+	}
+	kind := annotations["olm.owner.kind"]
+	if kind == "" {
+		kind = "ClusterServiceVersion"
+	}
+	return g.ObjectByKey(graph.ObjectRef{Kind: kind, Namespace: namespace, Name: name}.Key())
+}
+
+// gitopsLine reports the first GitOps/CD management marker found walking
+// the chain top-down (owners usually carry it, e.g. a Deployment's
+// argocd.argoproj.io/instance label — Pods rarely do).
+func gitopsLine(chain []graph.Object) string {
+	for _, obj := range chain {
+		if line, ok := gitopsManagedByLine(obj); ok {
+			return line
+		}
+	}
+	return ""
+}
+
+func gitopsManagedByLine(obj graph.Object) (string, bool) {
+	labels := obj.Raw.GetLabels()
+	annotations := obj.Raw.GetAnnotations()
+	if app := labels["argocd.argoproj.io/instance"]; app != "" {
+		return fmt.Sprintf("managed-by: argocd (app:%s)", app), true
+	}
+	if name := labels["kustomize.toolkit.fluxcd.io/name"]; name != "" {
+		if ns := labels["kustomize.toolkit.fluxcd.io/namespace"]; ns != "" {
+			return fmt.Sprintf("managed-by: flux (kustomization:%s/%s)", ns, name), true
+		}
+		return fmt.Sprintf("managed-by: flux (kustomization:%s)", name), true
+	}
+	if release := labels["app.kubernetes.io/instance"]; release != "" {
+		if labels["helm.sh/chart"] != "" || annotations["meta.helm.sh/release-name"] != "" {
+			return fmt.Sprintf("managed-by: helm (release:%s)", release), true
+		}
+	}
+	if mb := labels["app.kubernetes.io/managed-by"]; mb != "" {
+		return "managed-by: " + strings.ToLower(mb), true
+	}
+	return "", false
+}
+
+// chainPanelBody renders the owner chain top-down with the currently
+// navigable cursor highlighted, same interaction pattern as the Relations
+// pane (j/k, enter to jump).
+func (m model) chainPanelBody(g *graph.Graph, obj graph.Object, width, maxLines int) string {
+	chain := ownerChain(g, obj)
+	var out []string
+	if mb := gitopsLine(chain); mb != "" {
+		out = append(out, "  "+truncateText(mb, width-2))
+	}
+	cursorIndex := -1
+	if len(chain) > 0 {
+		idx := m.chainCursor
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(chain) {
+			idx = len(chain) - 1
+		}
+		cursorIndex = idx
+	}
+	for i, o := range chain {
+		if len(out) >= maxLines {
+			out = append(out, fmt.Sprintf("... %d more", len(chain)-i))
+			break
+		}
+		text := truncateText(chainDisplayLabel(o, o.Ref.Key() == obj.Ref.Key()), width-2)
+		if i == cursorIndex {
+			out = append(out, "> "+summaryRefSelectedStyle.Render(text))
+		} else {
+			out = append(out, "  "+summaryRefStyle.Render(text))
+		}
+	}
+	if len(out) == 0 {
+		out = []string{"no owner chain"}
+	}
+	return strings.Join(out, "\n")
+}
+
+func chainDisplayLabel(obj graph.Object, current bool) string {
+	kind := chainKindLabel(obj.Ref.Kind)
+	extra := ""
+	switch obj.Ref.Kind {
+	case "Subscription":
+		if channel, _, _ := unstructuredNestedString(obj, "spec", "channel"); channel != "" {
+			extra = " (channel:" + channel + ")"
+		}
+	case "InstallPlan":
+		if phase, _, _ := unstructuredNestedString(obj, "status", "phase"); phase != "" {
+			extra = " (" + phase + ")"
+		}
+	}
+	line := kind + ": " + obj.Ref.Name + extra
+	if current {
+		line += " (this)"
+	}
+	return line
+}
+
+func chainKindLabel(kind string) string {
+	switch kind {
+	case "ClusterServiceVersion":
+		return "csv"
+	case "Subscription":
+		return "subscription"
+	case "InstallPlan":
+		return "installplan"
+	default:
+		return summaryKind(kind)
+	}
 }
 
 func (m *model) jumpToLogMatch(direction int) {
@@ -793,6 +1075,9 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "loading..."
 	}
+	if m.logsFullscreen {
+		return m.logsFullscreenView()
+	}
 	_, listHeight := m.leftListSize()
 	leftWidth := leftPaneOuterWidth(m.width)
 	rightWidth := max(40, m.width-leftWidth-3)
@@ -816,7 +1101,7 @@ func (m model) View() string {
 		listLines = listLines[:listHeight]
 	}
 	leftTop := paneStyle(m.active == paneResources).Width(leftWidth).Height(listHeight).Render(strings.Join(listLines, "\n"))
-	leftBottom := m.logsPaneView(leftWidth, leftBottomHeight)
+	leftBottom := m.chainPaneView(leftWidth, leftBottomHeight)
 	usage := m.usagePaneView(rightWidth, usageHeight)
 	rightTop := m.relationsPaneView(rightWidth, relationsHeight)
 	rightBottom := m.statusPaneView(rightWidth, statusHeight)
@@ -967,9 +1252,45 @@ func (m model) relationsPaneView(width, height int) string {
 	return paneTitle(title, body, width, height, m.active == paneRelations)
 }
 
-func (m model) logsPaneView(width, height int) string {
-	logs := m.logsView(width-4, height-3)
-	return paneTitleRaw("Logs", logs, width, height, m.active == paneLogs)
+// logsFullscreenView takes over the whole terminal (k9s-style `l`) instead
+// of fighting for room in a permanent quadrant. esc/l returns to the 4-pane
+// layout; all log state (scroll, grep, search, wrap, ...) persists across
+// toggles since it lives on the model, not this view.
+func (m model) logsFullscreenView() string {
+	title := "Logs: no resource selected"
+	if obj, ok := m.selected(); ok {
+		title = "Logs: " + obj.Ref.Label()
+	}
+	height := max(4, m.height-1)
+	logs := m.logsView(max(8, m.width-4), height-3)
+	footer := lipgloss.NewStyle().
+		Width(max(1, m.width)).
+		Foreground(lipgloss.Color("245")).
+		Render(truncateText("esc back  G live  / search  n/N next  space pause  w wrap  P previous  t timestamps", max(1, m.width-1)))
+	return paneTitleRaw(title, logs, m.width, height, true) + "\n" + footer
+}
+
+// chainPaneView is the freed left-column-bottom quadrant: the object's
+// owner chain (ReplicaSet -> Deployment, Job -> CronJob, ...), extended
+// with the OLM Subscription/InstallPlan/CSV chain and GitOps management
+// labels when present.
+func (m model) chainPaneView(width, height int) string {
+	if m.loading {
+		return paneTitleRaw("Owner Chain", "Loading cluster snapshot...", width, height, false)
+	}
+	if m.namespacePicker {
+		return paneTitleRaw("Owner Chain", "", width, height, false)
+	}
+	obj, ok := m.selected()
+	if !ok {
+		return paneTitleRaw("Owner Chain", "No resources loaded.", width, height, false)
+	}
+	title := "Owner Chain"
+	if m.active == paneChain {
+		title = "Owner Chain (j/k select, enter open, esc back)"
+	}
+	body := m.chainPanelBody(m.snapshot.Graph, obj, width-4, height-3)
+	return paneTitleRaw(title, body, width, height, m.active == paneChain)
 }
 
 // usagePaneView is the small strip above Relations: CPU/memory usage vs
@@ -2122,11 +2443,13 @@ func problemsView(g *graph.Graph, obj graph.Object) string {
 
 func helpView() string {
 	return strings.Join([]string{
-		"tab  switch pane (resources/logs/relations/status)",
-		"/    filter resources, or search logs when Logs pane active",
+		"tab  switch pane (resources/chain/relations/status)",
+		"l    fullscreen logs for the selected resource, esc back",
+		"/    filter resources, or search logs when logs are fullscreen",
 		":    command mode",
 		"relations pane: j/k select a ref, enter opens it (cm/secret/sa/pvc/svc/... values in Yaml), esc back",
-		"logs pane: j/k or ↑/↓ scroll, G jump to live tail, n/N next/prev search match",
+		"owner chain pane: j/k select an owner (or OLM subscription/installplan/csv), enter opens it, esc back",
+		"fullscreen logs: j/k or ↑/↓ scroll, G jump to live tail, n/N next/prev search match",
 		"status pane: j/k or ↑/↓ scroll, G back to top",
 		":q / ctrl-c quit",
 		":pod :svc :deploy :sts :ds :job :cj :cm :secret :pvc :all",
@@ -2161,7 +2484,7 @@ func (m model) footer() string {
 		text = "/" + m.command
 	}
 	if text == "" {
-		text = "tab panes  enter open ref  :pod :deploy :svc :node :events  A age-sort  space pause  ?  help  :q"
+		text = "tab panes  l logs  enter open ref  :pod :deploy :svc :node :events  A age-sort  ?  help  :q"
 	}
 	return lipgloss.NewStyle().
 		Width(max(1, m.width)).
