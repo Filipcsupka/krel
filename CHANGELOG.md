@@ -8,11 +8,19 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 
 ### Added
 
+- Owner Chain pane replaces the permanent Logs pane in the left-column-bottom slot: walks `metadata.ownerReferences` generically (Pod -> ReplicaSet -> Deployment, Job -> CronJob, ...), `j`/`k`/`enter` to jump, same interaction as Relations.
+- OLM chain support: `Subscription`, `InstallPlan`, and `ClusterServiceVersion` (`operators.coreos.com/v1alpha1`) are now fetched best-effort (clusters without OLM's CRDs just get an empty OLM segment, no load error) and linked into the graph via `status.installPlanRef`, `status.installedCSV`, and `spec.clusterServiceVersionNames`. The Owner Chain pane shows the full `subscription -> installplan -> csv -> deployment -> ... -> pod` chain on OpenShift/OLM clusters.
+- ArgoCD `Application` (`argoproj.io/v1alpha1`) fetched the same best-effort way and linked via the `argocd.argoproj.io/instance` label every managed object carries. Shows as a real chain node (`application: <name> (sync:... health:...)`), not just a label line.
+- A `managed-by: argocd|flux|helm` line appears in the Owner Chain when any object in the chain carries the corresponding GitOps/CD label, even when the managing resource itself (e.g. a Flux Kustomization) isn't fetched.
+- Top crumb now reads `config: <kubeconfig> ctx: <context> ns: <namespace>` instead of just `ctx`/`ns`.
+- `l` opens a fullscreen, k9s-style log view for the selected resource; `esc` (or `l` again) returns to the 4-pane layout. All existing log controls (grep, wrap, previous, search, pause, timestamps) carry over unchanged.
 - CI now runs `go vet`, race-enabled tests, and an informational `govulncheck` pass (reports, doesn't block on stdlib/toolchain-lag CVEs) alongside gofmt/build.
 - Bumped `go.mod` to `go 1.26.2` and `golang.org/x/net` to v0.58.0 to close the vulnerabilities that were actually fixable from this repo.
 - Releases are automatic: after CI passes on `main`, an Auto Tag workflow bumps the patch version and dispatches the Release build — no manual `git tag` for routine releases.
 
 ### Fixed
+
+- Log scroll direction was inverted: `k`/`up` now correctly moves into history and `j`/`down` moves back toward the live tail; `G` still jumps to live.
 
 - Every bordered pane rendered 2 rows taller than requested (lipgloss `Height()` sets content height; the border adds 2 more on top of that). With 5 stacked panes this compounded enough to push the resource list header and the Usage panel off the top of the terminal. Fixed at the source in the shared pane renderers; added a regression test that drives `View()` at several terminal sizes and fails if it ever overflows again.
 - The resource list pane was sized wider than its padded content area, so bubbles' list component wrapped its own rows and silently grew taller than its box — same overflow, different cause. List content is now sized to match the actual padded area.

@@ -39,9 +39,11 @@ The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, buil
 - Kubernetes client-go kubeconfig loading
 - Context, namespace, and kubeconfig switching inside the TUI
 - Object summaries, relations, YAML, events, and problem views
+- Owner Chain pane: generic `metadata.ownerReferences` walk (Pod -> ReplicaSet -> Deployment, Job -> CronJob, ...), extended with the OLM `Subscription -> InstallPlan -> ClusterServiceVersion` chain on OpenShift/OLM clusters and an ArgoCD `Application` node (sync/health status) or a `managed-by: argocd|flux|helm` line when GitOps-managed
+- Fullscreen logs (`l`, k9s-style) with grep, previous-container, search, wrap, timestamps, and live-tail follow
 - Non-interactive commands for scripts and quick checks
-- Support for Pods, Deployments, ReplicaSets, Services, EndpointSlices, ConfigMaps, Secrets, PVCs, ServiceAccounts, Ingresses, and OpenShift Routes
-- Relationship edges for ownership, Services selecting Pods, Pod references, Ingress backends, and Routes pointing to Services
+- Support for Pods, Deployments, ReplicaSets, Services, EndpointSlices, ConfigMaps, Secrets, PVCs, ServiceAccounts, Ingresses, OpenShift Routes, OLM Subscriptions/InstallPlans/ClusterServiceVersions, and ArgoCD Applications
+- Relationship edges for ownership, Services selecting Pods, Pod references, Ingress backends, Routes pointing to Services, OLM install chains, and ArgoCD-managed objects
 - Basic problem detection for missing references, Services selecting zero Pods, and unbound PVCs
 
 ## Install
@@ -123,11 +125,13 @@ Kubeconfig loading follows standard Kubernetes client behavior:
 
 Left and right columns each take half the screen width:
 
-- top-left: resource list
-- bottom-left: Logs — stays visible, follows the selected object regardless of pane
+- top-left: resource list, headed by the crumb `config: <kubeconfig> ctx: <context> ns: <namespace>  kind:...  sort:...`
+- bottom-left: Owner Chain — `metadata.ownerReferences` walked generically (Pod -> ReplicaSet -> Deployment, Job -> CronJob, ...), extended upward through OLM's `Subscription -> InstallPlan -> ClusterServiceVersion` and an ArgoCD `Application` node when present. `j`/`k` to move, `enter` opens the selected owner's values.
 - top-right, small strip: Usage — 2 lines (cpu, mem), each a gauge from metrics-server when available plus requests/limits, and a `|`-separated extra field (pod/restart count, node placement)
 - right, below Usage: Relations — Services, ConfigMaps, Secrets, ServiceAccounts, PVCs, and other refs for the selected object. Clickable: `j`/`k` to move, `enter` opens the referenced object's values in-place, `esc` returns to the relations list.
 - bottom-right, the largest pane: Status — why it's failing (problems), non-Ready `status.conditions` (covers Nodes, Certificates, HPAs, and most CRDs that follow the conditions convention), recent events, then environment values grouped by container. Scrollable with `j`/`k`.
+
+Logs are not a permanent pane — press `l` for a fullscreen, k9s-style log view of the selected resource; `esc` (or `l` again) returns to the 4-pane layout.
 
 The Relations pane resets to the relations list whenever you move to a different resource, even if you'd switched it to Details/YAML/Events/Problems.
 
@@ -135,12 +139,14 @@ The Relations pane resets to the relations list whenever you move to a different
 
 | Key | Action |
 | --- | --- |
-| `/` | Filter resources, or search logs when the Logs pane is active |
-| `tab` | Switch pane (resources / logs / relations / status) |
+| `/` | Filter resources, or search logs when the fullscreen log view is open |
+| `tab` | Switch pane (resources / owner chain / relations / status) |
+| `l` | Open fullscreen logs for the selected resource; `esc` or `l` to close |
 | `:` | Command mode |
 | `j` / `k` (relations pane) | Move between relations |
 | `enter` (relations pane) | Open the selected relation's values |
-| `j` / `k` (logs pane) | Scroll logs, `G` returns to the live tail |
+| `j` / `k` (owner chain pane) | Move between owners; `enter` opens the selected one |
+| `j` / `k` (fullscreen logs) | Scroll logs, `G` returns to the live tail |
 | `r` | Relations view |
 | `d` | Details view |
 | `y` | YAML view |
