@@ -24,7 +24,7 @@ func TestNamespaceCommandOpensPicker(t *testing.T) {
 	if !got.namespacePicker {
 		t.Fatal("expected namespace picker mode")
 	}
-	if got.list.Title != "ctx: test-context  namespaces" {
+	if got.list.Title != "config: default  ctx: test-context  namespaces" {
 		t.Fatalf("unexpected list title: %q", got.list.Title)
 	}
 }
@@ -40,7 +40,7 @@ func TestResourceAliasFiltersList(t *testing.T) {
 	if got.resourceKind != "Pod" {
 		t.Fatalf("expected Pod filter, got %q", got.resourceKind)
 	}
-	if got.list.Title != "ctx: test-context  ns: app  kind: Pod" {
+	if got.list.Title != "config: default  ctx: test-context  ns: app  kind: Pod" {
 		t.Fatalf("unexpected list title: %q", got.list.Title)
 	}
 	if got.list.Items()[0].(item).obj.Ref.Kind != "Pod" {
@@ -165,6 +165,63 @@ func TestQuitCommandReturnsTeaQuit(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(tea.QuitMsg); !ok {
 		t.Fatalf("expected tea.QuitMsg, got %T", msg)
+	}
+}
+
+func TestOwnerChainWalksOwnerReferences(t *testing.T) {
+	deploy := testObject("Deployment", "app", "api")
+	deploy.Ref.UID = "deploy-uid"
+	deploy.Raw.SetUID(deploy.Ref.UID)
+
+	rs := testObject("ReplicaSet", "app", "api-1")
+	rs.Ref.UID = "rs-uid"
+	rs.Raw.SetUID(rs.Ref.UID)
+	rs.Raw.SetOwnerReferences([]metav1.OwnerReference{{Kind: "Deployment", Name: "api", UID: deploy.Ref.UID}})
+
+	pod := testObject("Pod", "app", "api-1-xyz")
+	pod.Raw.SetOwnerReferences([]metav1.OwnerReference{{Kind: "ReplicaSet", Name: "api-1", UID: rs.Ref.UID}})
+
+	g := graph.Build([]graph.Object{deploy, rs, pod})
+	podObj, _ := g.ObjectByKey(pod.Ref.Key())
+
+	chain := ownerChain(g, podObj)
+	if len(chain) != 3 {
+		t.Fatalf("expected 3-object chain, got %d: %+v", len(chain), chain)
+	}
+	if chain[0].Ref.Kind != "Deployment" || chain[1].Ref.Kind != "ReplicaSet" || chain[2].Ref.Kind != "Pod" {
+		t.Fatalf("expected Deployment -> ReplicaSet -> Pod order, got %s -> %s -> %s", chain[0].Ref.Kind, chain[1].Ref.Kind, chain[2].Ref.Kind)
+	}
+}
+
+func TestGitopsManagedByLine(t *testing.T) {
+	obj := testObject("Deployment", "app", "api")
+	obj.Raw.SetLabels(map[string]string{"argocd.argoproj.io/instance": "my-app"})
+	line, ok := gitopsManagedByLine(obj)
+	if !ok || line != "managed-by: argocd (app:my-app)" {
+		t.Fatalf("expected argocd managed-by line, got %q ok=%v", line, ok)
+	}
+
+	none := testObject("Deployment", "app", "plain")
+	if _, ok := gitopsManagedByLine(none); ok {
+		t.Fatal("expected no managed-by line for unlabeled object")
+	}
+}
+
+func TestLogScrollFollowsTailByDefaultAndKMovesIntoHistory(t *testing.T) {
+	m := testModel()
+	m.logsFullscreen = true
+	m.logLines = []string{"line1", "line2", "line3"}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	got := updated.(model)
+	if got.logScroll != 1 {
+		t.Fatalf("expected k to scroll into history (scroll=1), got %d", got.logScroll)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	got = updated.(model)
+	if got.logScroll != 0 {
+		t.Fatalf("expected j to move back toward the live tail (scroll=0), got %d", got.logScroll)
 	}
 }
 

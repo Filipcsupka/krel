@@ -43,9 +43,24 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
   mixed together) split into a 4-pane layout: resource list, a Status pane
   (health, problems, recent events, env values), a Relations pane (Services,
   ConfigMaps, Secrets, ServiceAccounts, PVCs — `j`/`k`/`enter` to open one and
-  see its values), and a Logs pane that stays visible across all of it.
+  see its values), and an Owner Chain pane.
+- Top crumb now shows `config: <kubeconfig> ctx: <context> ns: <namespace>`
+  instead of just context/namespace, matching k9s' style.
+- Logs moved out of the permanent grid: `l` opens a fullscreen log view for
+  the selected resource (k9s-style), `esc` returns to the 4-pane layout. Log
+  scroll direction fixed — `k`/`up` moves into history, `j`/`down` moves back
+  toward the live tail, `G` resumes following.
+- The freed pane now shows the Owner Chain: `metadata.ownerReferences`
+  walked generically (Pod -> ReplicaSet -> Deployment, Job -> CronJob, ...),
+  extended with the OLM Subscription -> InstallPlan -> CSV chain when those
+  objects are loaded, plus a `managed-by:` line when ArgoCD, Flux, or Helm
+  labels are present anywhere in the chain. `j`/`k`/`enter` to jump, same as
+  Relations. OLM resources (Subscription/InstallPlan/ClusterServiceVersion)
+  aren't fetched by the snapshot loader yet, so the OLM segment only appears
+  once that's wired up — tracked in the roadmap.
 
 ## Non-goals (unchanged)
 
-Still read-only. Not replacing kubectl/k9s for exec/edit/port-forward. Not a
-general dashboard.
+Not a general dashboard, not a resource editor. exec and port-forward are
+planned (see roadmap) so krel can double as a daily-driver terminal tool —
+that's an attach/stream capability, not resource mutation.
