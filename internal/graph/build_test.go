@@ -76,6 +76,37 @@ func TestBuildPodReferenceEdgesAndMissingRefs(t *testing.T) {
 	}
 }
 
+func TestBuildOLMChainEdges(t *testing.T) {
+	sub := testObject("Subscription", "operators", "billing-operator", "sub-1", map[string]any{
+		"status": map[string]any{
+			"installPlanRef": map[string]any{"name": "install-x7f2k", "namespace": "operators"},
+			"installedCSV":   "billing-operator.v1.4.2",
+		},
+	})
+	plan := testObject("InstallPlan", "operators", "install-x7f2k", "plan-1", map[string]any{
+		"spec": map[string]any{
+			"clusterServiceVersionNames": []any{"billing-operator.v1.4.2"},
+		},
+	})
+	csv := testObject("ClusterServiceVersion", "operators", "billing-operator.v1.4.2", "csv-1", nil)
+	unresolved := testObject("Subscription", "operators", "pending-operator", "sub-2", nil)
+
+	g := Build([]Object{sub, plan, csv, unresolved})
+
+	if !hasEdge(g.Edges, sub.Ref, plan.Ref, "Resolves") {
+		t.Fatalf("expected Subscription to resolve InstallPlan, got %#v", g.Edges)
+	}
+	if !hasEdge(g.Edges, sub.Ref, csv.Ref, "Installs") {
+		t.Fatalf("expected Subscription to install CSV, got %#v", g.Edges)
+	}
+	if !hasEdge(g.Edges, plan.Ref, csv.Ref, "Installs") {
+		t.Fatalf("expected InstallPlan to install CSV, got %#v", g.Edges)
+	}
+	if len(g.ProblemsFor(unresolved.Ref)) != 0 {
+		t.Fatalf("expected no problems for a Subscription with empty status fields, got %#v", g.ProblemsFor(unresolved.Ref))
+	}
+}
+
 func testObject(kind, namespace, name, uid string, extra map[string]any) Object {
 	raw := map[string]any{
 		"apiVersion": "v1",

@@ -97,6 +97,10 @@ func Build(objects []Object) *Graph {
 			problems = append(problems, jobProblems(obj)...)
 		case "Node":
 			problems = append(problems, nodeProblems(obj)...)
+		case "Subscription":
+			edges = appendSubscriptionEdges(edges, obj, index)
+		case "InstallPlan":
+			edges = appendInstallPlanEdges(edges, obj, index)
 		}
 	}
 
@@ -378,6 +382,46 @@ func appendNamedRef(edges []Edge, problems []Problem, from Object, index map[str
 	}
 	edges = append(edges, Edge{From: from.Ref, To: to.Ref, Type: edgeType, Health: "Healthy", Source: source, Reason: reason})
 	return edges, problems
+}
+
+// appendSubscriptionEdges links an OLM Subscription to the InstallPlan and
+// ClusterServiceVersion it produced. Both status fields are set by OLM only
+// once resolution/install has actually happened, so an empty field (fresh
+// or still-resolving Subscription) is normal, not a problem — and a
+// populated field the graph can't resolve (RBAC hid the target, or it just
+// hasn't loaded into this snapshot) isn't flagged as Broken either, unlike
+// appendNamedRef's normal workload-reference handling: OLM's own resources
+// are often intentionally excluded from a user's RBAC even when the
+// Subscription itself is visible.
+func appendSubscriptionEdges(edges []Edge, sub Object, index map[string]Object) []Edge {
+	if name, _, _ := unstructured.NestedString(sub.Raw.Object, "status", "installPlanRef", "name"); name != "" {
+		namespace, _, _ := unstructured.NestedString(sub.Raw.Object, "status", "installPlanRef", "namespace")
+		if namespace == "" {
+			namespace = sub.Ref.Namespace
+		}
+		if to, ok := index[(ObjectRef{Kind: "InstallPlan", Namespace: namespace, Name: name}).Key()]; ok {
+			edges = append(edges, Edge{From: sub.Ref, To: to.Ref, Type: "Resolves", Health: "Healthy", Source: "status.installPlanRef", Reason: "Subscription resolved this InstallPlan."})
+		}
+	}
+	if name, _, _ := unstructured.NestedString(sub.Raw.Object, "status", "installedCSV"); name != "" {
+		if to, ok := index[(ObjectRef{Kind: "ClusterServiceVersion", Namespace: sub.Ref.Namespace, Name: name}).Key()]; ok {
+			edges = append(edges, Edge{From: sub.Ref, To: to.Ref, Type: "Installs", Health: "Healthy", Source: "status.installedCSV", Reason: "Subscription installed this ClusterServiceVersion."})
+		}
+	}
+	return edges
+}
+
+// appendInstallPlanEdges links an OLM InstallPlan to the CSV(s) it installs
+// (spec.clusterServiceVersionNames). Same reasoning as
+// appendSubscriptionEdges applies to unresolved names — no problems raised.
+func appendInstallPlanEdges(edges []Edge, plan Object, index map[string]Object) []Edge {
+	names, _, _ := unstructured.NestedStringSlice(plan.Raw.Object, "spec", "clusterServiceVersionNames")
+	for _, name := range names {
+		if to, ok := index[(ObjectRef{Kind: "ClusterServiceVersion", Namespace: plan.Ref.Namespace, Name: name}).Key()]; ok {
+			edges = append(edges, Edge{From: plan.Ref, To: to.Ref, Type: "Installs", Health: "Healthy", Source: "spec.clusterServiceVersionNames", Reason: "InstallPlan installs this ClusterServiceVersion."})
+		}
+	}
+	return edges
 }
 
 func matchingPods(pods []Object, namespace string, selector map[string]string) []Object {

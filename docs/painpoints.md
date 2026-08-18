@@ -55,9 +55,10 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
   extended with the OLM Subscription -> InstallPlan -> CSV chain when those
   objects are loaded, plus a `managed-by:` line when ArgoCD, Flux, or Helm
   labels are present anywhere in the chain. `j`/`k`/`enter` to jump, same as
-  Relations. OLM resources (Subscription/InstallPlan/ClusterServiceVersion)
-  aren't fetched by the snapshot loader yet, so the OLM segment only appears
-  once that's wired up — tracked in the roadmap.
+  Relations. Subscription/InstallPlan/ClusterServiceVersion are now fetched
+  by the snapshot loader (best-effort — clusters without OLM's CRDs just get
+  an empty OLM segment, no load error), so the OLM chain populates on
+  OpenShift/OLM clusters.
 
 ## Non-goals (unchanged)
 

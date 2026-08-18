@@ -735,12 +735,66 @@ func ownerChain(g *graph.Graph, obj graph.Object) []graph.Object {
 			current = owner
 		}
 	}
+
+	// Continue upward through OLM's Subscription/InstallPlan/CSV edges
+	// (internal/graph/build.go's appendSubscriptionEdges/
+	// appendInstallPlanEdges) when the topmost object reached above is a
+	// CSV or InstallPlan — whether it got there via a real
+	// metadata.ownerReferences (OLM sets one on the workloads it deploys,
+	// pointing at the CSV) or the annotation fallback just above. No-op for
+	// every other kind, and for clusters without OLM's CRDs loaded.
+	current = chain[0]
+	for i := 0; i < 12; i++ {
+		owner, ok := findOLMOwner(g, current.Ref)
+		if !ok || seen[owner.Ref.Key()] {
+			break
+		}
+		seen[owner.Ref.Key()] = true
+		chain = append([]graph.Object{owner}, chain...)
+		current = owner
+	}
 	return chain
 }
 
 func findOwner(g *graph.Graph, ref graph.ObjectRef) (graph.Object, bool) {
 	for _, edge := range g.EdgesFor(ref) {
 		if edge.Type == "Owns" && edge.To.Key() == ref.Key() {
+			return g.ObjectByKey(edge.From.Key())
+		}
+	}
+	return graph.Object{}, false
+}
+
+// findOLMOwner walks one hop up the OLM chain: InstallPlan/Subscription ->
+// CSV (edge type "Installs") or Subscription -> InstallPlan (edge type
+// "Resolves"). When a CSV has both an InstallPlan and a Subscription
+// "Installs" edge pointing at it, InstallPlan is the closer hop and wins —
+// the walk reaches Subscription on its next iteration, from the InstallPlan.
+func findOLMOwner(g *graph.Graph, ref graph.ObjectRef) (graph.Object, bool) {
+	var installPlanOwner, subscriptionOwner *graph.Object
+	for _, edge := range g.EdgesFor(ref) {
+		if edge.Type != "Installs" || edge.To.Key() != ref.Key() {
+			continue
+		}
+		owner, ok := g.ObjectByKey(edge.From.Key())
+		if !ok {
+			continue
+		}
+		switch edge.From.Kind {
+		case "InstallPlan":
+			installPlanOwner = &owner
+		case "Subscription":
+			subscriptionOwner = &owner
+		}
+	}
+	if installPlanOwner != nil {
+		return *installPlanOwner, true
+	}
+	if subscriptionOwner != nil {
+		return *subscriptionOwner, true
+	}
+	for _, edge := range g.EdgesFor(ref) {
+		if edge.Type == "Resolves" && edge.To.Key() == ref.Key() {
 			return g.ObjectByKey(edge.From.Key())
 		}
 	}

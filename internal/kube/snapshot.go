@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/filipcsupka/krel/internal/graph"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -80,6 +81,36 @@ var phaseOneResources = []resourceDef{
 	{schema.GroupVersionResource{Group: "cert-manager.io", Version: "v1", Resource: "issuers"}, "Issuer", true},
 	{schema.GroupVersionResource{Group: "cert-manager.io", Version: "v1", Resource: "clusterissuers"}, "ClusterIssuer", false},
 	{schema.GroupVersionResource{Group: "route.openshift.io", Version: "v1", Resource: "routes"}, "Route", true},
+	{schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "subscriptions"}, "Subscription", true},
+	{schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "installplans"}, "InstallPlan", true},
+	{schema.GroupVersionResource{Group: "operators.coreos.com", Version: "v1alpha1", Resource: "clusterserviceversions"}, "ClusterServiceVersion", true},
+}
+
+// optionalResourceKinds are fetched best-effort: their CRDs don't exist on
+// every cluster (OLM's operators.coreos.com group is OpenShift/OLM-only), so
+// a "the server could not find the requested resource" error just means
+// this cluster doesn't have that CRD installed — not worth surfacing as a
+// load error on every snapshot for every non-OLM user. A real error against
+// one of these kinds (e.g. RBAC denial) still gets recorded.
+var optionalResourceKinds = map[string]bool{
+	"Subscription":          true,
+	"InstallPlan":           true,
+	"ClusterServiceVersion": true,
+}
+
+// isBenignMissingResource reports whether err represents an optional kind's
+// CRD simply not being installed on this cluster, as opposed to a real
+// failure (RBAC denial, network error, ...) worth surfacing.
+func isBenignMissingResource(kind string, err error) bool {
+	if !optionalResourceKinds[kind] {
+		return false
+	}
+	// apierrors.IsNotFound catches the well-formed case; the dynamic client
+	// talking to a completely unregistered GVR sometimes surfaces a
+	// StatusError whose Reason doesn't round-trip cleanly, so fall back to
+	// matching the apiserver's standard "no route for this resource"
+	// message rather than risk swallowing a real error.
+	return apierrors.IsNotFound(err) || strings.Contains(err.Error(), "could not find the requested resource")
 }
 
 func LoadSnapshot(ctx context.Context, opts Options) (Snapshot, error) {
@@ -131,7 +162,9 @@ func LoadSnapshot(ctx context.Context, opts Options) (Snapshot, error) {
 			list, err = dyn.Resource(def.gvr).List(ctx, metav1.ListOptions{})
 		}
 		if err != nil {
-			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", def.kind, err))
+			if !isBenignMissingResource(def.kind, err) {
+				loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", def.kind, err))
+			}
 			continue
 		}
 		for i := range list.Items {
