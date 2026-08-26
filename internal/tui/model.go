@@ -352,6 +352,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// While the resource/namespace list is actively capturing filter
+		// text ("/" pressed, not yet committed with enter or cancelled
+		// with esc), the filter input owns every keystroke exclusively —
+		// letters, backspace, enter, and esc all go straight to the list
+		// widget, matching k9s's filter-prompt behavior. Without this the
+		// global shortcut switch below steals keys (e.g. "y"/"e"/"r" flip
+		// the right-pane mode, backspace is a global no-op, esc resets
+		// pane mode instead of cancelling the filter) mid-keystroke.
+		if m.list.FilterState() == list.Filtering {
+			before := m.selectedKey()
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			after := m.selectedKey()
+			if before != after {
+				m.logLines = nil
+				m.logErr = ""
+				m.logScroll = 0
+				m.summaryCursor = 0
+				m.statusScroll = 0
+				m.chainCursor = 0
+				m.mode = "relations"
+				return m, tea.Batch(cmd, m.loadSelectedLogs())
+			}
+			return m, cmd
+		}
 		if !m.namespacePicker && !m.logsFullscreen && m.active == paneChain {
 			switch msg.String() {
 			case "j", "down":
