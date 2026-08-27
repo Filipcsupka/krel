@@ -11,6 +11,7 @@ import (
 )
 
 type ObjectRef struct {
+	Group     string
 	Kind      string
 	Namespace string
 	Name      string
@@ -18,6 +19,16 @@ type ObjectRef struct {
 }
 
 func (r ObjectRef) Key() string {
+	if r.Group == "" {
+		return r.IdentityKey()
+	}
+	return fmt.Sprintf("%s|%s", r.Group, r.IdentityKey())
+}
+
+// IdentityKey is the traditional kind/namespace/name identity used when an
+// API reference omits its group. Group-aware Key is required to distinguish
+// CRDs that reuse the same Kind (common with Crossplane providers).
+func (r ObjectRef) IdentityKey() string {
 	return fmt.Sprintf("%s/%s/%s", r.Kind, r.Namespace, r.Name)
 }
 
@@ -68,7 +79,21 @@ func (o Object) Summary() []string {
 }
 
 func (o Object) YAML() string {
-	data, err := yaml.Marshal(o.Raw.Object)
+	object := o.Raw.Object
+	if o.Ref.Kind == "Secret" {
+		object = o.Raw.DeepCopy().Object
+		for _, field := range []string{"data", "stringData"} {
+			values, found, _ := unstructured.NestedStringMap(object, field)
+			if !found {
+				continue
+			}
+			for key := range values {
+				values[key] = "<redacted>"
+			}
+			_ = unstructured.SetNestedStringMap(object, values, field)
+		}
+	}
+	data, err := yaml.Marshal(object)
 	if err != nil {
 		return err.Error()
 	}
@@ -98,7 +123,23 @@ func New(objects []Object, edges []Edge, problems []Problem) *Graph {
 			g.byUID[obj.Ref.UID] = i
 		}
 	}
+	addUnambiguousAliases(g.byKey, objects)
 	return g
+}
+
+func addUnambiguousAliases(index map[string]int, objects []Object) {
+	ambiguous := map[string]bool{}
+	for i, obj := range objects {
+		alias := obj.Ref.IdentityKey()
+		if existing, ok := index[alias]; ok && existing != i {
+			ambiguous[alias] = true
+			continue
+		}
+		index[alias] = i
+	}
+	for alias := range ambiguous {
+		delete(index, alias)
+	}
 }
 
 func (g *Graph) ObjectByKey(key string) (Object, bool) {
@@ -135,4 +176,112 @@ func (g *Graph) ProblemsFor(ref ObjectRef) []Problem {
 		}
 	}
 	return out
+}
+
+// ImpactFor walks objects likely to be affected if ref becomes unavailable.
+// It understands the graph's two edge conventions: ownership/selection
+// edges point from controller to dependent, while reference edges point from
+// consumer to dependency.
+func (g *Graph) ImpactFor(ref ObjectRef, maxDepth int) []ObjectRef {
+	if maxDepth <= 0 {
+		maxDepth = 4
+	}
+	type queued struct {
+		ref   ObjectRef
+		depth int
+	}
+	queue := []queued{{ref: ref}}
+	seen := map[string]bool{ref.Key(): true}
+	var out []ObjectRef
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth >= maxDepth {
+			continue
+		}
+		for _, edge := range g.EdgesFor(current.ref) {
+			next, ok := affectedNeighbor(edge, current.ref)
+			if !ok || seen[next.Key()] {
+				continue
+			}
+			seen[next.Key()] = true
+			out = append(out, next)
+			queue = append(queue, queued{ref: next, depth: current.depth + 1})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key() < out[j].Key() })
+	return out
+}
+
+func affectedNeighbor(edge Edge, current ObjectRef) (ObjectRef, bool) {
+	if edge.Type == "Owns" {
+		if edge.From.Key() == current.Key() {
+			return edge.To, true
+		}
+		if edge.To.Key() == current.Key() {
+			return edge.From, true
+		}
+		return ObjectRef{}, false
+	}
+	controllerToDependent := map[string]bool{
+		"Selects": true, "HasEndpoints": true, "Manages": true,
+		"Protects": true, "Monitors": true, "BelongsTo": true,
+	}
+	if controllerToDependent[edge.Type] {
+		if edge.From.Key() == current.Key() {
+			return edge.To, true
+		}
+		return ObjectRef{}, false
+	}
+	if edge.To.Key() == current.Key() {
+		return edge.From, true
+	}
+	return ObjectRef{}, false
+}
+
+// ProblemPath finds the shortest useful graph path from ref to an unhealthy
+// related object. Workload ownership is followed downward; normal references
+// are followed from consumer to dependency.
+func (g *Graph) ProblemPath(ref ObjectRef, maxDepth int) ([]ObjectRef, Problem, bool) {
+	if maxDepth <= 0 {
+		maxDepth = 5
+	}
+	type queued struct {
+		ref  ObjectRef
+		path []ObjectRef
+	}
+	queue := []queued{{ref: ref, path: []ObjectRef{ref}}}
+	seen := map[string]bool{ref.Key(): true}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if len(current.path) > 1 {
+			if problems := g.ProblemsFor(current.ref); len(problems) > 0 {
+				return current.path, problems[0], true
+			}
+		}
+		if len(current.path)-1 >= maxDepth {
+			continue
+		}
+		for _, edge := range g.EdgesFor(current.ref) {
+			next, ok := causeNeighbor(edge, current.ref)
+			if !ok || seen[next.Key()] {
+				continue
+			}
+			seen[next.Key()] = true
+			path := append(append([]ObjectRef{}, current.path...), next)
+			queue = append(queue, queued{ref: next, path: path})
+		}
+	}
+	return nil, Problem{}, false
+}
+
+func causeNeighbor(edge Edge, current ObjectRef) (ObjectRef, bool) {
+	if edge.Type == "Owns" && edge.From.Key() == current.Key() {
+		return edge.To, true
+	}
+	if edge.From.Key() == current.Key() && edge.Type != "Selects" && edge.Type != "HasEndpoints" && edge.Type != "Manages" && edge.Type != "Protects" && edge.Type != "Monitors" {
+		return edge.To, true
+	}
+	return ObjectRef{}, false
 }

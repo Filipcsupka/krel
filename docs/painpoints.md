@@ -4,27 +4,28 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
 "show me the object." Weak at "why is this object related to that one" and
 "what breaks if I touch this." krel's job is the second half.
 
-## Gaps (not covered by k9s today)
+## Differentiators shipped
 
-1. **Cross-namespace relations.** k9s is namespace-scoped per view. No way to
-   see that a NetworkPolicy in `ns-a` selects pods that call a Service in
-   `ns-b`, or that a Secret is referenced by ServiceAccounts across
-   namespaces (imagePullSecrets, cross-ns RBAC). krel's graph already spans
-   objects; it currently loads one namespace at a time — needs multi-ns
-   graph build + edges that cross namespace boundaries.
+1. **Cross-namespace relations.** k9s is namespace-scoped per view. It cannot
+   show an HTTPRoute backend in another namespace, a RoleBinding subject from
+   another namespace, or cluster-scoped secret/storage resources used by
+   namespace objects. `krel -A` / `:ns all` loads a
+   focused cross-namespace relationship neighborhood and qualifies rows with
+   their namespaces, including RBAC, Gateway API, ArgoCD, External Secrets,
+   storage, Strimzi, and generic CRD references.
 
 2. **Blast radius / impact.** No tool answers "if I delete/restart/scale this
    object, what else is affected?" k9s shows the object; it doesn't walk
    reverse dependencies (Service → all consuming Ingresses/Routes/HPAs,
-   ConfigMap → all Pods mounting it, PVC → all StatefulSets). krel has the
-   graph to compute this — needs a reverse-edge walk + a dedicated view.
+   ConfigMap → all Pods mounting it, PVC → all StatefulSets). Press `i` in
+   krel for the bounded transitive impact walk and current health of affected
+   objects.
 
 3. **Root-cause chains for failures.** CrashLoopBackOff in k9s means: open
    pod, read events, open logs, guess. krel already detects some problems
-   (missing refs, zero-selector Services, unbound PVCs) but doesn't chain
-   them — e.g. Pod crash ← ConfigMap key removed ← ConfigMap last-changed.
-   Needs the problem detector to walk the graph one hop from a failing pod
-   and surface the most likely upstream cause, not just the symptom.
+   and now walks ownership and dependency edges to show the shortest loaded
+   cause path directly in Status (for example Deployment → failed Pod, or Pod
+   → unhealthy PVC/Secret-backed custom resource).
 
 ## UX fixes shipped
 
@@ -65,6 +66,19 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
   `argocd.argoproj.io/instance` label every object it manages already
   carries. Shows as `application: <name> (sync:... health:...)` prepended
   to the chain.
+- Log polling was replaced by real Kubernetes follow streams. Live tails stay
+  pinned, manual scroll and pause preserve the viewport while buffering new
+  lines, reconnects avoid replaying the old tail, and closing logs cancels the
+  stream.
+- Resource loading is discovery-driven. The pft inventory currently exposes
+  133 listable namespaced types and asp exposes 633; all are command-addressable
+  without compiling their kinds into krel, while a bounded operational profile
+  keeps normal startup fast.
+- The grid is content-sized and switches to one focused pane on small
+  terminals. Horizontal and vertical bounds are regression-tested.
+- Status consolidates service/PDB/NetworkPolicy/resource-request/resource-limit/
+  node checks; graph problems cover high restarts, quota saturation, certificate
+  expiry, negative generic conditions/phases, and ArgoCD sync/health.
 
 ## Non-goals (unchanged)
 

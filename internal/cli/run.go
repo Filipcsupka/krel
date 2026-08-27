@@ -22,11 +22,14 @@ func Run(args []string, stderr io.Writer, binaryName string) int {
 	var namespace string
 	var kubeconfig string
 	var contextName string
+	var allNamespaces bool
 
 	flags.StringVar(&namespace, "namespace", "", "namespace to inspect")
 	flags.StringVar(&namespace, "n", "", "namespace to inspect")
 	flags.StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig")
 	flags.StringVar(&contextName, "context", "", "kubeconfig context")
+	flags.BoolVar(&allNamespaces, "all-namespaces", false, "inspect resources across all namespaces")
+	flags.BoolVar(&allNamespaces, "A", false, "inspect resources across all namespaces")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -34,16 +37,23 @@ func Run(args []string, stderr io.Writer, binaryName string) int {
 		return 2
 	}
 
+	resourceKind := ""
+	positional := flags.Args()
+	if len(positional) == 3 && (positional[0] == "why" || positional[0] == "refs") {
+		resourceKind = positional[1]
+	}
 	snapshot, err := kube.LoadSnapshot(context.Background(), kube.Options{
-		Namespace:   namespace,
-		Kubeconfig:  kubeconfig,
-		ContextName: contextName,
+		Namespace:     namespace,
+		Kubeconfig:    kubeconfig,
+		ContextName:   contextName,
+		AllNamespaces: allNamespaces,
+		ResourceKind:  resourceKind,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", binaryName, err)
 		return 1
 	}
-	if handled, err := runCommand(flags.Args(), snapshot, binaryName); handled {
+	if handled, err := runCommand(positional, snapshot, binaryName); handled {
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", binaryName, err)
 			return 1
@@ -68,7 +78,7 @@ func runCommand(args []string, snapshot kube.Snapshot, binaryName string) (bool,
 		if len(args) != 3 {
 			return true, fmt.Errorf("usage: %s why <kind> <name>", binaryName)
 		}
-		obj, ok := findObject(snapshot.Graph, args[1], args[2])
+		obj, ok := findObject(snapshot, args[1], args[2])
 		if !ok {
 			return true, fmt.Errorf("%s/%s not found in namespace %s", args[1], args[2], snapshot.Namespace)
 		}
@@ -78,7 +88,7 @@ func runCommand(args []string, snapshot kube.Snapshot, binaryName string) (bool,
 		if len(args) != 3 {
 			return true, fmt.Errorf("usage: %s refs <kind> <name>", binaryName)
 		}
-		obj, ok := findObject(snapshot.Graph, args[1], args[2])
+		obj, ok := findObject(snapshot, args[1], args[2])
 		if !ok {
 			return true, fmt.Errorf("%s/%s not found in namespace %s", args[1], args[2], snapshot.Namespace)
 		}
@@ -92,10 +102,15 @@ func runCommand(args []string, snapshot kube.Snapshot, binaryName string) (bool,
 	}
 }
 
-func findObject(g *graph.Graph, kind, name string) (graph.Object, bool) {
+func findObject(snapshot kube.Snapshot, kind, name string) (graph.Object, bool) {
 	normalized := normalizeKind(kind)
-	for _, obj := range g.Objects {
-		if strings.EqualFold(obj.Ref.Kind, normalized) && obj.Ref.Name == name {
+	group := ""
+	if resource, ok := snapshot.ResolveResource(kind); ok {
+		normalized = resource.Kind
+		group = resource.GVR.Group
+	}
+	for _, obj := range snapshot.Graph.Objects {
+		if strings.EqualFold(obj.Ref.Kind, normalized) && obj.Ref.Name == name && (group == "" || obj.Ref.Group == group) {
 			return obj, true
 		}
 	}

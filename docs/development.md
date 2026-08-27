@@ -6,6 +6,12 @@
 - relationship graph construction
 - Bubble Tea rendering and interaction
 
+API discovery supplies every preferred listable kind. Startup loads a bounded,
+concurrent relationship profile; kinds outside that profile are loaded on
+demand. All-namespace mode loads only the selected kind's relationship
+neighborhood to avoid turning CRD-heavy clusters into hundreds of eager API
+requests.
+
 ## Requirements
 
 - Go 1.26 or newer
@@ -46,6 +52,11 @@ scripts/      install helpers
 ## Adding Relationships
 
 Most relationship work belongs in `internal/graph`.
+
+Generic Kubernetes-shaped references (`kind`/`name`/`namespace`, common
+`*Ref`, and well-known `*Name` fields) are connected automatically when the
+target is loaded. Add explicit handlers when a resource uses selectors,
+labels, implicit defaults, or another domain-specific convention.
 
 When adding a relationship:
 

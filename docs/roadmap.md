@@ -4,18 +4,18 @@
 
 ## Near Term
 
-- Improve graph coverage for more Kubernetes resource kinds
 - exec and port-forward, so krel can be a daily-driver terminal tool
   alongside kubectl/k9s, not just a read-only relationship inspector
 - Add richer problem checks for common workload and networking issues
 - Improve keyboard ergonomics in dense namespaces
 - Add more tests around edge cases and missing references
 - Publish release binaries
+- Add lazy watches for non-log resources so status and relations update without a full refresh
+- Add configurable saved resource/namespace views
 
 ## Later
 
 - Optional graph export formats
-- Better OpenShift-specific relationship coverage
 - Pluggable checks
 - Saved views or bookmarks
 - More focused workflows for incident triage
