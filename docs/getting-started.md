@@ -64,6 +64,12 @@ Open a specific namespace:
 kr --namespace default
 ```
 
+Inspect all namespaces with a focused relationship neighborhood:
+
+```bash
+kr -A
+```
+
 Use a specific context:
 
 ```bash
@@ -86,6 +92,8 @@ d details
 y YAML
 e events
 p problems
+i impact / blast radius
+! snapshot load warnings
 ```
 
 The bottom-left pane shows the Owner Chain: `metadata.ownerReferences` walked
@@ -99,10 +107,20 @@ Use `:` for command mode:
 :ctx                  list contexts
 :ctx <name>           switch context
 :ns <namespace>       switch namespace
+:ns all                inspect across namespaces
 :kubeconfig <path>    switch kubeconfig
 :kc <path>            short form
 :refresh              reload the snapshot
 ```
+
+Type any API kind, plural, or short name after `:`. Press `tab` in command
+mode for discovery-backed completion, including installed CRDs.
+
+The log view uses a real Kubernetes follow stream. At the live tail it
+autoscrolls; scrolling up freezes the viewport while new lines remain
+buffered. `G` returns to live follow. Space pauses/resumes the viewport,
+`P` switches to previous-container logs, and closing the view stops the
+stream.
 
 ## Use Non-Interactive Commands
 
@@ -126,4 +144,7 @@ kr --namespace default problems
 
 ## Permissions
 
-`krel` needs read access to the namespace resources it inspects. If your kubeconfig user cannot list or get a resource kind, that kind may be missing from the snapshot or the command may fail with a Kubernetes API error.
+`krel` needs read access to the resources it inspects. Discovery makes every
+listable API visible, while denied resources are reported as load warnings.
+All-namespace mode naturally requires broader list permissions than a single
+namespace.

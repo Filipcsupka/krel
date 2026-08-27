@@ -54,6 +54,9 @@ type model struct {
 	logTimestamps   bool
 	logSince        time.Duration
 	logScroll       int
+	logRequestID    string
+	logEvents       <-chan kube.LogEvent
+	logCancel       context.CancelFunc
 	logSearch       string
 	logSearchMode   bool
 	summaryCursor   int
@@ -67,23 +70,35 @@ type reloadResult struct {
 	err      error
 }
 
-type logResult struct {
-	key   string
-	lines []string
-	err   error
+type logStreamStarted struct {
+	id     string
+	events <-chan kube.LogEvent
+	cancel context.CancelFunc
 }
 
-type logTick struct {
-	key string
+type logEventMsg struct {
+	id    string
+	event kube.LogEvent
+	open  bool
+}
+
+type logReconnect struct {
+	id string
 }
 
 type item struct {
-	obj graph.Object
+	obj           graph.Object
+	showNamespace bool
 }
 
-func (i item) Title() string       { return i.obj.Ref.Label() }
+func (i item) Title() string {
+	if i.showNamespace && i.obj.Ref.Namespace != "" {
+		return i.obj.Ref.Kind + "/" + i.obj.Ref.Namespace + "/" + i.obj.Ref.Name
+	}
+	return i.obj.Ref.Label()
+}
 func (i item) Description() string { return shortStatus(i.obj) }
-func (i item) FilterValue() string { return i.obj.Ref.Label() }
+func (i item) FilterValue() string { return i.Title() }
 
 type namespaceItem struct {
 	name    string
@@ -127,7 +142,7 @@ func newResourceList(snapshot kube.Snapshot, kinds ...string) list.Model {
 				continue
 			}
 		}
-		items = append(items, item{obj: obj})
+		items = append(items, item{obj: obj, showNamespace: snapshot.Options.AllNamespaces})
 	}
 	sortItems(items, sortMode)
 	l := list.New(items, resourceDelegate{}, 34, 20)
@@ -183,17 +198,39 @@ func (m model) resourceList() list.Model {
 const paneBoxOverhead = 4
 
 func leftPaneOuterWidth(termWidth int) int {
-	return max(30, termWidth/2)
+	return max(34, termWidth*44/100)
 }
 
 // leftListSize returns the resource list's content width/height. The left
 // column is split 50/50 with the Logs pane below it, matching the 50/50
 // width split between the left and right columns.
 func (m model) leftListSize() (int, int) {
+	if m.compactLayout() {
+		return max(20, m.width-paneBoxOverhead), max(4, m.height-3)
+	}
 	outerWidth := leftPaneOuterWidth(m.width)
-	mainHeight := max(8, m.height-1)
-	leftTopHeight := max(8, mainHeight/2)
+	leftTopHeight, _ := m.leftLayoutHeights()
 	return max(20, outerWidth-paneBoxOverhead), max(4, leftTopHeight-2)
+}
+
+func (m model) compactLayout() bool {
+	return m.width < 100 || m.height < 22
+}
+
+func (m model) leftLayoutHeights() (int, int) {
+	mainHeight := max(8, m.height-1)
+	chainLines := 1
+	if obj, ok := m.selected(); ok {
+		chainLines = len(ownerChain(m.snapshot.Graph, obj))
+		if gitopsLine(ownerChain(m.snapshot.Graph, obj)) != "" {
+			chainLines++
+		}
+	}
+	// title + borders plus the actual chain, capped so the resource list
+	// remains the dominant navigation surface.
+	bottom := minInt(max(5, chainLines+3), max(5, mainHeight*35/100))
+	top := max(8, mainHeight-bottom)
+	return top, max(5, mainHeight-top)
 }
 
 func newNamespaceList(snapshot kube.Snapshot) list.Model {
@@ -265,7 +302,7 @@ func sortModeLabel(mode string) string {
 }
 
 func (m model) Init() tea.Cmd {
-	return m.loadSelectedLogs()
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -283,29 +320,86 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot = msg.snapshot
 		m.namespacePicker = false
+		if msg.snapshot.Options.ResourceKind != "" {
+			if resource, ok := msg.snapshot.ResolveResource(msg.snapshot.Options.ResourceKind); ok {
+				m.resourceKind = resource.Kind
+			} else {
+				m.resourceKind = msg.snapshot.Options.ResourceKind
+			}
+		}
 		m.list = m.resourceList()
 		lw, lh := m.leftListSize()
 		m.list.SetSize(lw, lh)
 		m.status = fmt.Sprintf("loaded context %s namespace %s", msg.snapshot.Context, msg.snapshot.Namespace)
 		return m, m.loadSelectedLogs()
-	case logResult:
-		if msg.key != m.selectedKey() {
+	case logStreamStarted:
+		if msg.id != m.currentLogRequestID() || !m.logsFullscreen {
+			msg.cancel()
 			return m, nil
 		}
-		m.logKey = msg.key
-		m.logErr = ""
-		if msg.err != nil {
-			m.logErr = msg.err.Error()
+		if m.logCancel != nil {
+			m.logCancel()
+		}
+		if m.logRequestID != msg.id {
 			m.logLines = nil
-		} else {
-			m.logLines = msg.lines
+			m.logScroll = 0
 		}
-		if m.logPaused {
+		m.logRequestID = msg.id
+		m.logEvents = msg.events
+		m.logCancel = msg.cancel
+		m.logKey = m.selectedKey()
+		m.logErr = ""
+		return m, waitForLogEvent(msg.id, msg.events)
+	case logEventMsg:
+		if msg.id != m.logRequestID || !m.logsFullscreen {
 			return m, nil
 		}
-		return m, scheduleLogRefresh(msg.key)
-	case logTick:
-		if msg.key != m.selectedKey() || m.logPaused {
+		if !msg.open {
+			m.logEvents = nil
+			m.logCancel = nil
+			if m.logPrevious {
+				return m, nil
+			}
+			return m, scheduleLogReconnect(msg.id)
+		}
+		if msg.event.Err != nil {
+			prefix := ""
+			if msg.event.Source != "" {
+				prefix = msg.event.Source + ": "
+			}
+			if len(m.logLines) > 0 {
+				m.logLines = append(m.logLines, "error: "+prefix+msg.event.Err.Error())
+			} else {
+				m.logErr = prefix + msg.event.Err.Error()
+			}
+			return m, waitForLogEvent(msg.id, m.logEvents)
+		}
+		line := msg.event.Line
+		if msg.event.Source != "" {
+			if timestamp, rest, ok := splitLogTimestamp(line); ok {
+				line = timestamp + " [" + msg.event.Source + "] " + rest
+			} else {
+				line = "[" + msg.event.Source + "] " + line
+			}
+		}
+		if line != "" {
+			m.logErr = ""
+			m.logLines = append(m.logLines, line)
+			if m.logPaused || m.logScroll > 0 {
+				m.logScroll++
+			}
+			if len(m.logLines) > 4000 {
+				drop := len(m.logLines) - 4000
+				m.logLines = m.logLines[drop:]
+				m.logScroll = minInt(m.logScroll, len(m.logLines)-1)
+			}
+			// An offset from the tail represents a deliberately frozen
+			// viewport. Grow it as lines arrive so the visible history does
+			// not jump; offset zero remains pinned to the live tail.
+		}
+		return m, waitForLogEvent(msg.id, m.logEvents)
+	case logReconnect:
+		if msg.id != m.logRequestID || m.logPrevious || !m.logsFullscreen {
 			return m, nil
 		}
 		return m, m.loadSelectedLogs()
@@ -319,6 +413,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.logsFullscreen {
 			switch msg.String() {
 			case "esc", "l":
+				if m.logCancel != nil {
+					m.logCancel()
+					m.logCancel = nil
+				}
 				m.logsFullscreen = false
 				m.status = ""
 				return m, nil
@@ -445,6 +543,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = "relations"
 				m.summaryCursor = 0
 				m.status = ""
+				return m, nil
+			}
+			if m.active != paneResources {
+				m.active = paneResources
+				m.status = ""
 			}
 			return m, nil
 		case "backspace":
@@ -454,9 +557,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.logsFullscreen = true
+			m.logLines = nil
+			m.logErr = ""
+			m.logRequestID = ""
+			m.logPaused = false
 			m.logScroll = 0
 			m.status = ""
-			return m, nil
+			return m, m.loadSelectedLogs()
 		case "enter":
 			if m.namespacePicker {
 				selected, ok := m.list.SelectedItem().(namespaceItem)
@@ -465,19 +572,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				opts := m.snapshot.Options
 				opts.Namespace = selected.name
+				opts.AllNamespaces = false
 				m.loading = true
 				m.status = "loading namespace " + selected.name + "..."
 				return m, reload(opts)
 			}
+			if m.active == paneResources {
+				m.active = paneRelations
+				m.mode = "relations"
+				m.status = "relations focused; esc returns to resources"
+				return m, nil
+			}
 		case " ":
+			if !m.logsFullscreen {
+				return m, nil
+			}
 			m.logPaused = !m.logPaused
 			if m.logPaused {
 				m.status = "logs paused"
 				return m, nil
 			}
+			m.logScroll = 0
 			m.status = "logs following"
-			return m, m.loadSelectedLogs()
+			return m, nil
 		case "w":
+			if !m.logsFullscreen {
+				return m, nil
+			}
 			m.logWrap = !m.logWrap
 			if m.logWrap {
 				m.status = "log wrap on"
@@ -486,6 +607,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "P":
+			if !m.logsFullscreen {
+				return m, nil
+			}
 			m.logPrevious = !m.logPrevious
 			if m.logPrevious {
 				m.status = "previous logs on"
@@ -494,6 +618,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.loadSelectedLogs()
 		case "t":
+			if !m.logsFullscreen {
+				return m, nil
+			}
 			m.logTimestamps = !m.logTimestamps
 			if m.logTimestamps {
 				m.status = "log timestamps on"
@@ -519,6 +646,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.command = ""
 		case "tab":
 			m.active = (m.active + 1) % paneCount
+		case "shift+tab":
+			m.active = (m.active + paneCount - 1) % paneCount
 		case "r":
 			m.mode = "relations"
 			m.active = paneRelations
@@ -533,6 +662,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.active = paneRelations
 		case "p":
 			m.mode = "problems"
+			m.active = paneRelations
+		case "i":
+			m.mode = "impact"
+			m.active = paneRelations
+		case "!":
+			m.mode = "loaderrors"
 			m.active = paneRelations
 		case "?":
 			m.mode = "help"
@@ -573,12 +708,36 @@ func (m model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.command) > 0 {
 			m.command = m.command[:len(m.command)-1]
 		}
+	case "tab":
+		matches := m.resourceSuggestions(m.command)
+		if len(matches) == 1 {
+			m.command = matches[0]
+		} else if len(matches) > 1 {
+			m.status = "matches: " + strings.Join(matches[:minInt(8, len(matches))], ", ")
+		}
 	default:
 		if len(msg.Runes) > 0 {
 			m.command += string(msg.Runes)
 		}
 	}
 	return m, nil
+}
+
+func (m model) resourceSuggestions(prefix string) []string {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	seen := map[string]bool{}
+	var matches []string
+	for _, resource := range m.snapshot.Resources {
+		candidates := append([]string{strings.ToLower(resource.Kind), resource.GVR.Resource, resource.CommandName()}, resource.ShortNames...)
+		for _, candidate := range candidates {
+			if strings.HasPrefix(strings.ToLower(candidate), prefix) && !seen[candidate] {
+				seen[candidate] = true
+				matches = append(matches, candidate)
+			}
+		}
+	}
+	sort.Strings(matches)
+	return matches
 }
 
 func (m model) updateLogSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1045,7 +1204,14 @@ func (m model) runCommand(command string) (tea.Model, tea.Cmd) {
 			m.status = "usage: :ns [namespace]"
 			return m, nil
 		}
-		opts.Namespace = fields[1]
+		if strings.EqualFold(fields[1], "all") || fields[1] == "*" {
+			opts.Namespace = ""
+			opts.AllNamespaces = true
+			opts.ResourceKind = m.resourceKind
+		} else {
+			opts.Namespace = fields[1]
+			opts.AllNamespaces = false
+		}
 	case "kc", "kubeconfig":
 		if len(fields) != 2 {
 			m.status = "usage: :kubeconfig <path>"
@@ -1106,10 +1272,33 @@ func (m model) runCommand(command string) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadSelectedLogs()
 	default:
-		if kind, ok := resourceAlias(fields[0]); ok {
+		kind, knownAlias := resourceAlias(fields[0])
+		var discovered kube.ResourceType
+		discoveredResource := false
+		if !knownAlias {
+			if resource, ok := m.snapshot.ResolveResource(fields[0]); ok {
+				kind = resource.Kind
+				knownAlias = true
+				discovered = resource
+				discoveredResource = true
+			}
+		}
+		if knownAlias {
 			m.namespacePicker = false
 			m.resourceKind = kind
 			m.warningsOnly = kind == "Event"
+			loaded := m.snapshotHasKind(kind)
+			request := kind
+			if discoveredResource {
+				loaded = m.snapshot.LoadedResources[discovered.Key()]
+				request = discovered.CommandName()
+			}
+			if !loaded {
+				opts.ResourceKind = request
+				m.loading = true
+				m.status = "loading " + kind + "..."
+				return m, reload(opts)
+			}
 			m.list = m.resourceList()
 			lw, lh := m.leftListSize()
 			m.list.SetSize(lw, lh)
@@ -1126,12 +1315,20 @@ func (m model) runCommand(command string) (tea.Model, tea.Cmd) {
 			m.status = "showing all loaded resources"
 			return m, m.loadSelectedLogs()
 		}
-		m.status = "unknown command: " + fields[0]
+		if suggestions := m.resourceSuggestions(fields[0]); len(suggestions) > 0 {
+			m.status = "ambiguous resource; use: " + strings.Join(suggestions[:minInt(6, len(suggestions))], ", ")
+		} else {
+			m.status = "unknown command: " + fields[0]
+		}
 		return m, nil
 	}
 	m.loading = true
 	m.status = "loading..."
 	return m, reload(opts)
+}
+
+func (m model) snapshotHasKind(kind string) bool {
+	return m.snapshot.LoadedKinds[kind]
 }
 
 func (m model) selectedKey() string {
@@ -1144,41 +1341,44 @@ func (m model) selectedKey() string {
 
 func (m model) loadSelectedLogs() tea.Cmd {
 	obj, ok := m.selected()
-	if !ok || m.namespacePicker {
+	if !ok || m.namespacePicker || !m.logsFullscreen {
 		return nil
 	}
-	key := obj.Ref.Key()
+	id := m.currentLogRequestID()
 	pods := m.logPods(obj)
-	previous := m.logPrevious || shouldPreferPreviousLogs(m.snapshot.Graph, obj)
+	tailLines := int64(160)
+	if m.logRequestID == id && len(m.logLines) > 0 {
+		tailLines = 0
+	}
 	return func() tea.Msg {
-		result := kube.LoadLogs(context.Background(), kube.LogRequest{
+		stream := kube.StreamLogs(context.Background(), kube.LogRequest{
 			Options:    m.snapshot.Options,
-			Namespace:  m.snapshot.Namespace,
+			Namespace:  obj.Ref.Namespace,
 			Pods:       pods,
-			TailLines:  160,
+			TailLines:  tailLines,
 			Grep:       m.logGrep,
-			Previous:   previous,
+			Previous:   m.logPrevious,
 			Timestamps: m.logTimestamps,
 			Since:      m.logSince,
-			MaxPerPane: 400,
 		})
-		return logResult{key: key, lines: result.Lines, err: result.Err}
+		return logStreamStarted{id: id, events: stream.Events, cancel: stream.Cancel}
 	}
 }
 
-func shouldPreferPreviousLogs(g *graph.Graph, obj graph.Object) bool {
-	for _, pod := range relatedPods(g, obj) {
-		status := strings.ToLower(podDisplayStatus(pod))
-		if strings.Contains(status, "crashloop") || strings.Contains(status, "restarts:") && podRestarts(pod) > 0 {
-			return true
-		}
-	}
-	return false
+func (m model) currentLogRequestID() string {
+	return fmt.Sprintf("%s|prev=%t|ts=%t|grep=%s|since=%s", m.selectedKey(), m.logPrevious, m.logTimestamps, m.logGrep, m.logSince)
 }
 
-func scheduleLogRefresh(key string) tea.Cmd {
-	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
-		return logTick{key: key}
+func waitForLogEvent(id string, events <-chan kube.LogEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, open := <-events
+		return logEventMsg{id: id, event: event, open: open}
+	}
+}
+
+func scheduleLogReconnect(id string) tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return logReconnect{id: id}
 	})
 }
 
@@ -1196,19 +1396,25 @@ func (m model) View() string {
 	if m.logsFullscreen {
 		return m.logsFullscreenView()
 	}
+	if m.compactLayout() {
+		return m.compactView()
+	}
 	_, listHeight := m.leftListSize()
 	leftWidth := leftPaneOuterWidth(m.width)
-	rightWidth := max(40, m.width-leftWidth-3)
+	rightWidth := max(40, m.width-leftWidth)
 	mainHeight := max(8, m.height-1)
-	leftTopHeight := listHeight + 2
-	leftBottomHeight := max(6, mainHeight-leftTopHeight)
+	_, leftBottomHeight := m.leftLayoutHeights()
 
 	// Usage is a fixed small strip (2 gauge lines + title + border).
 	usageHeight := 5
 	rightRemaining := max(6, mainHeight-usageHeight)
 	// Relations gets cut down ~30% versus an even split so Status (the
 	// more information-dense pane) gets the extra room.
-	relationsHeight := max(5, rightRemaining*35/100)
+	relationsLines := 1
+	if obj, ok := m.selected(); ok {
+		relationsLines = len(relationsPanelLines(m.snapshot.Graph, obj))
+	}
+	relationsHeight := minInt(max(5, relationsLines+3), max(5, rightRemaining*45/100))
 	statusHeight := max(6, rightRemaining-relationsHeight)
 
 	// bubbles list.View() doesn't always respect SetSize exactly (its own
@@ -1218,7 +1424,7 @@ func (m model) View() string {
 	if len(listLines) > listHeight {
 		listLines = listLines[:listHeight]
 	}
-	leftTop := paneStyle(m.active == paneResources).Width(leftWidth).Height(listHeight).Render(strings.Join(listLines, "\n"))
+	leftTop := paneStyle(m.active == paneResources).Width(max(1, leftWidth-paneBoxOverhead)).Height(listHeight).Render(strings.Join(listLines, "\n"))
 	leftBottom := m.chainPaneView(leftWidth, leftBottomHeight)
 	usage := m.usagePaneView(rightWidth, usageHeight)
 	rightTop := m.relationsPaneView(rightWidth, relationsHeight)
@@ -1238,6 +1444,28 @@ func (m model) View() string {
 		full = strings.Join(lines[:m.height], "\n")
 	}
 	return full
+}
+
+func (m model) compactView() string {
+	mainHeight := max(6, m.height-1)
+	width := max(30, m.width)
+	var body string
+	switch m.active {
+	case paneResources:
+		_, listHeight := m.leftListSize()
+		lines := strings.Split(m.list.View(), "\n")
+		if len(lines) > listHeight {
+			lines = lines[:listHeight]
+		}
+		body = paneStyle(true).Width(max(1, width-paneBoxOverhead)).Height(max(1, mainHeight-2)).Render(strings.Join(lines, "\n"))
+	case paneChain:
+		body = m.chainPaneView(width, mainHeight)
+	case paneRelations:
+		body = m.relationsPaneView(width, mainHeight)
+	case paneStatus:
+		body = m.compactStatusPaneView(width, mainHeight)
+	}
+	return body + "\n" + m.footer()
 }
 
 func (m model) selected() (graph.Object, bool) {
@@ -1318,8 +1546,15 @@ func (m model) statusPaneView(width, height int) string {
 		return paneTitle("Status", "No resources loaded.", width, height, m.active == paneStatus)
 	}
 	title := "Status"
+	if count := len(m.snapshot.LoadErrors); count > 0 {
+		title = fmt.Sprintf("Status (! %d load warnings)", count)
+	}
 	if m.active == paneStatus {
-		title = "Status (j/k scroll, G top)"
+		if len(m.snapshot.LoadErrors) > 0 {
+			title = fmt.Sprintf("Status (! %d warnings; j/k scroll)", len(m.snapshot.LoadErrors))
+		} else {
+			title = "Status (j/k scroll, G top)"
+		}
 	}
 	body := statusPanelBody(m.snapshot.Graph, obj, width-4, height-3, m.statusScroll)
 	return paneTitleRaw(title, body, width, height, m.active == paneStatus)
@@ -1332,14 +1567,14 @@ func (m model) statusPaneView(width, height int) string {
 // details, YAML, events, or problems.
 func (m model) relationsPaneView(width, height int) string {
 	if m.loading {
-		return paneStyle(false).Width(width).Height(max(1, height-2)).Render("Loading cluster snapshot...")
+		return paneStyle(false).Width(max(1, width-paneBoxOverhead)).Height(max(1, height-2)).Render("Loading cluster snapshot...")
 	}
 	if m.namespacePicker {
 		return m.namespaceHelp(width, height)
 	}
 	obj, ok := m.selected()
 	if !ok {
-		return paneStyle(false).Width(width).Height(max(1, height-2)).Render("No resources loaded.")
+		return paneStyle(false).Width(max(1, width-paneBoxOverhead)).Height(max(1, height-2)).Render("No resources loaded.")
 	}
 	if m.mode == "relations" || m.mode == "" {
 		title := "Relations"
@@ -1363,11 +1598,31 @@ func (m model) relationsPaneView(width, height int) string {
 	case "problems":
 		body = problemsView(m.snapshot.Graph, obj)
 		title = "Problems"
+	case "impact":
+		body = impactView(m.snapshot.Graph, obj)
+		title = "Impact / Blast Radius"
+	case "loaderrors":
+		body = loadErrorsView(m.snapshot.LoadErrors)
+		title = "Snapshot Load Warnings"
 	case "help":
 		body = helpView()
 		title = "Help"
 	}
 	return paneTitle(title, body, width, height, m.active == paneRelations)
+}
+
+func (m model) compactStatusPaneView(width, height int) string {
+	if m.loading || m.namespacePicker {
+		return m.statusPaneView(width, height)
+	}
+	obj, ok := m.selected()
+	if !ok {
+		return paneTitleRaw("Status + Usage", "No resources loaded.", width, height, true)
+	}
+	usage := usageSummary(m.snapshot.PodMetrics, relatedPods(m.snapshot.Graph, obj), width-4, 2)
+	statusLines := statusPanelBody(m.snapshot.Graph, obj, width-4, max(1, height-6), m.statusScroll)
+	body := usage + "\n" + statusLines
+	return paneTitleRaw("Status + Usage (j/k scroll, G top)", body, width, height, true)
 }
 
 // logsFullscreenView takes over the whole terminal (k9s-style `l`) instead
@@ -1431,7 +1686,7 @@ func usageSummary(podMetrics map[string]kube.PodMetric, pods []graph.Object, wid
 	var reqCPU, limCPU, reqMem, limMem, useCPU, useMem int64
 	haveUsage := false
 	for _, pod := range pods {
-		if pm, ok := podMetrics[pod.Ref.Name]; ok && pm.Found {
+		if pm, ok := podMetrics[kube.PodMetricKey(pod.Ref.Namespace, pod.Ref.Name)]; ok && pm.Found {
 			haveUsage = true
 			useCPU += pm.CPUMilli
 			useMem += pm.MemBytes
@@ -1454,28 +1709,9 @@ func usageSummary(podMetrics map[string]kube.PodMetric, pods []graph.Object, wid
 		return "no pods"
 	}
 
-	var restarts int64
-	nodeSet := map[string]bool{}
-	for _, pod := range pods {
-		restarts += podRestarts(pod)
-		if node, _, _ := unstructuredNestedString(pod, "spec", "nodeName"); node != "" {
-			nodeSet[node] = true
-		}
-	}
-	nodeInfo := "-"
-	switch nodes := sortedMapKeys(nodeSet); len(nodes) {
-	case 0:
-	case 1:
-		nodeInfo = nodes[0]
-	default:
-		nodeInfo = fmt.Sprintf("%d nodes", len(nodes))
-	}
-	cpuExtra := fmt.Sprintf("pods:%d restarts:%d", len(pods), restarts)
-	memExtra := "node:" + nodeInfo
-
 	lines := []string{
-		gaugeLine("cpu", useCPU, reqCPU, limCPU, haveUsage, cpuExtra, width),
-		gaugeLine("mem", useMem, reqMem, limMem, haveUsage, memExtra, width),
+		gaugeLine("cpu", useCPU, reqCPU, limCPU, haveUsage, "", width),
+		gaugeLine("mem", useMem, reqMem, limMem, haveUsage, "", width),
 	}
 	if maxLines > 0 && len(lines) > maxLines {
 		lines = lines[:maxLines]
@@ -1586,7 +1822,7 @@ func (m model) namespaceHelp(width, height int) string {
 		":ns / :namespace opens this picker.",
 		":ns <name> switches directly.",
 	}, "\n")
-	return paneStyle(false).Width(width).Height(max(1, height-2)).Render(body)
+	return paneStyle(false).Width(max(1, width-paneBoxOverhead)).Height(max(1, height-2)).Render(body)
 }
 
 func relationsView(g *graph.Graph, obj graph.Object) string {
@@ -1630,14 +1866,64 @@ func relationsSummaryView(g *graph.Graph, obj graph.Object) string {
 // top-right Relations pane. Health/pods/problems/events live in the
 // status pane instead.
 func relationsPanelLines(g *graph.Graph, obj graph.Object) []string {
-	var lines []string
-	lines = append(lines, serviceLines(g, obj)...)
-	lines = append(lines, configUsageLines(g, obj)...)
-	lines = append(lines, directRefLines(g, obj)...)
+	records := map[string]string{}
+	for _, line := range configUsageLines(g, obj) {
+		if ref, ok := navigableRefForLine(g, obj.Ref.Namespace, line); ok {
+			records[ref.Key()] = line
+		}
+	}
+	addEdges := func(focal graph.ObjectRef) {
+		for _, edge := range g.EdgesFor(focal) {
+			if edge.Type == "Owns" {
+				continue // ownership has its own pane
+			}
+			other := edge.To
+			direction := "→"
+			if edge.To.Key() == focal.Key() {
+				other = edge.From
+				direction = "←"
+			}
+			if other.Key() == obj.Ref.Key() || other.Kind == "Event" {
+				continue
+			}
+			if _, detailed := records[other.Key()]; detailed {
+				continue
+			}
+			name := other.Name
+			if other.Namespace != "" && other.Namespace != obj.Ref.Namespace {
+				name = other.Namespace + "/" + other.Name
+			}
+			alias := summaryKind(other.Kind)
+			if ambiguousRefIdentity(g, other) && other.Group != "" {
+				alias += "." + other.Group
+			}
+			records[other.Key()] = fmt.Sprintf("%s: %s  %s %s", alias, name, direction, edge.Type)
+		}
+	}
+	addEdges(obj.Ref)
+	for _, pod := range relatedPods(g, obj) {
+		if pod.Ref.Key() != obj.Ref.Key() {
+			addEdges(pod.Ref)
+		}
+	}
+	lines := make([]string, 0, len(records))
+	for _, line := range records {
+		lines = append(lines, line)
+	}
+	sort.Strings(lines)
 	if len(lines) == 0 {
-		lines = append(lines, "no direct refs")
+		return []string{"no direct refs"}
 	}
 	return lines
+}
+
+func ambiguousRefIdentity(g *graph.Graph, ref graph.ObjectRef) bool {
+	for _, obj := range g.Objects {
+		if obj.Ref.Kind == ref.Kind && obj.Ref.Namespace == ref.Namespace && obj.Ref.Name == ref.Name && obj.Ref.Group != ref.Group {
+			return true
+		}
+	}
+	return false
 }
 
 var summaryRefStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
@@ -1722,12 +2008,18 @@ func statusPanelLines(g *graph.Graph, obj graph.Object) []styledLine {
 			plainLineStyle,
 		})
 	}
+	if checks := operationalCheckLine(g, obj, pods); checks != "" {
+		out = append(out, styledLine{checks, plainLineStyle})
+	}
 
 	for _, c := range conditionLines(obj) {
 		out = append(out, c)
 	}
 	for _, p := range problemLines(g, obj) {
 		out = append(out, styledLine{p, problemLineStyle})
+	}
+	if cause := rootCauseLine(g, obj); cause != "" {
+		out = append(out, styledLine{cause, problemLineStyle})
 	}
 	for _, e := range recentEventLines(obj, pods, 8) {
 		out = append(out, styledLine{e, eventLineStyle})
@@ -1742,6 +2034,61 @@ func statusPanelLines(g *graph.Graph, obj graph.Object) []styledLine {
 	return out
 }
 
+func operationalCheckLine(g *graph.Graph, obj graph.Object, pods []graph.Object) string {
+	if len(pods) == 0 {
+		return ""
+	}
+	services := map[string]bool{}
+	pdb := false
+	netpol := false
+	nodes := map[string]bool{}
+	containers, requests, limits := 0, 0, 0
+	for _, pod := range pods {
+		if node, _, _ := unstructuredNestedString(pod, "spec", "nodeName"); node != "" {
+			nodes[node] = true
+		}
+		for _, edge := range g.EdgesFor(pod.Ref) {
+			if edge.To.Key() != pod.Ref.Key() {
+				continue
+			}
+			switch edge.From.Kind {
+			case "Service":
+				services[edge.From.Key()] = true
+			case "PodDisruptionBudget":
+				pdb = true
+			case "NetworkPolicy":
+				netpol = true
+			}
+		}
+		items, _, _ := unstructuredNestedSlice(pod, "spec", "containers")
+		for _, item := range items {
+			container, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			containers++
+			if cpu, _, _ := nestedString(container, "resources", "requests", "cpu"); cpu != "" {
+				if memory, _, _ := nestedString(container, "resources", "requests", "memory"); memory != "" {
+					requests++
+				}
+			}
+			if cpu, _, _ := nestedString(container, "resources", "limits", "cpu"); cpu != "" {
+				if memory, _, _ := nestedString(container, "resources", "limits", "memory"); memory != "" {
+					limits++
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("checks: svc:%d pdb:%s netpol:%s req:%d/%d lim:%d/%d nodes:%d", len(services), yesNo(pdb), yesNo(netpol), requests, containers, limits, containers, len(nodes))
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
 // badWhenTrueConditions are Node condition types where True means trouble
 // (the opposite polarity of most conditions, where True means healthy).
 var badWhenTrueConditions = map[string]bool{
@@ -1749,6 +2096,19 @@ var badWhenTrueConditions = map[string]bool{
 	"DiskPressure":       true,
 	"PIDPressure":        true,
 	"NetworkUnavailable": true,
+	"Degraded":           true,
+	"Failing":            true,
+	"Failure":            true,
+	"Error":              true,
+	"Stalled":            true,
+}
+
+var positiveConditions = map[string]bool{
+	"Ready":       true,
+	"Available":   true,
+	"Healthy":     true,
+	"Synced":      true,
+	"Established": true,
 }
 
 // conditionLines reads status.conditions generically — the convention most
@@ -1777,7 +2137,7 @@ func conditionLines(obj graph.Object) []styledLine {
 		if message != "" {
 			line += " - " + message
 		}
-		bad := (typ == "Ready" && status != "True") || (badWhenTrueConditions[typ] && status == "True")
+		bad := (positiveConditions[typ] && status != "True") || (badWhenTrueConditions[typ] && status == "True")
 		style := plainLineStyle
 		if bad {
 			style = problemLineStyle
@@ -2165,19 +2525,43 @@ func navigableRefForLine(g *graph.Graph, namespace, line string) (graph.ObjectRe
 		return graph.ObjectRef{}, false
 	}
 	kind := kindFromSummary(alias)
-	if kind == alias {
-		return graph.ObjectRef{}, false
-	}
 	name, _, _ := strings.Cut(strings.TrimSpace(rest), " ")
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return graph.ObjectRef{}, false
 	}
-	ref := graph.ObjectRef{Kind: kind, Namespace: namespace, Name: name}
-	if _, ok := g.ObjectByKey(ref.Key()); !ok {
+	targetNamespace := namespace
+	qualifiedName := false
+	if ns, objectName, qualified := strings.Cut(name, "/"); qualified {
+		targetNamespace = ns
+		name = objectName
+		qualifiedName = true
+	}
+	for _, obj := range g.Objects {
+		groupAlias := summaryKind(obj.Ref.Kind)
+		if obj.Ref.Group != "" {
+			groupAlias += "." + obj.Ref.Group
+		}
+		if obj.Ref.Name != name || !strings.EqualFold(obj.Ref.Kind, kind) && !strings.EqualFold(summaryKind(obj.Ref.Kind), alias) && !strings.EqualFold(groupAlias, alias) {
+			continue
+		}
+		if obj.Ref.Namespace == targetNamespace {
+			return obj.Ref, true
+		}
+	}
+	if qualifiedName {
 		return graph.ObjectRef{}, false
 	}
-	return ref, true
+	for _, obj := range g.Objects {
+		groupAlias := summaryKind(obj.Ref.Kind)
+		if obj.Ref.Group != "" {
+			groupAlias += "." + obj.Ref.Group
+		}
+		if obj.Ref.Name == name && (strings.EqualFold(obj.Ref.Kind, kind) || strings.EqualFold(summaryKind(obj.Ref.Kind), alias) || strings.EqualFold(groupAlias, alias)) {
+			return obj.Ref, true
+		}
+	}
+	return graph.ObjectRef{}, false
 }
 
 func summaryNavigableRefs(g *graph.Graph, namespace string, lines []string) map[int]graph.ObjectRef {
@@ -2202,21 +2586,46 @@ func sortedMapKeys(values map[string]bool) []string {
 func problemLines(g *graph.Graph, obj graph.Object) []string {
 	seen := map[string]bool{}
 	var lines []string
+	conditionTypes := map[string]bool{}
+	conditions, _, _ := unstructuredNestedSlice(obj, "status", "conditions")
+	for _, condition := range conditions {
+		if m, ok := condition.(map[string]any); ok {
+			if typ, _, _ := nestedString(m, "type"); typ != "" {
+				conditionTypes[typ] = true
+			}
+		}
+	}
 	for _, problem := range g.ProblemsFor(obj.Ref) {
+		duplicatedCondition := false
+		for typ := range conditionTypes {
+			if strings.HasPrefix(problem.Message, typ+" ") {
+				duplicatedCondition = true
+				break
+			}
+		}
+		if duplicatedCondition {
+			continue
+		}
 		line := "problem: " + problem.Message
 		seen[line] = true
-	}
-	for _, pod := range relatedPods(g, obj) {
-		for _, problem := range g.ProblemsFor(pod.Ref) {
-			line := "problem: " + pod.Ref.Name + " " + problem.Message
-			seen[line] = true
-		}
 	}
 	for line := range seen {
 		lines = append(lines, line)
 	}
 	sort.Strings(lines)
 	return lines
+}
+
+func rootCauseLine(g *graph.Graph, obj graph.Object) string {
+	path, problem, ok := g.ProblemPath(obj.Ref, 5)
+	if !ok {
+		return ""
+	}
+	labels := make([]string, 0, len(path))
+	for _, ref := range path {
+		labels = append(labels, summaryKind(ref.Kind)+"/"+ref.Name)
+	}
+	return "cause: " + strings.Join(labels, " → ") + " — " + problem.Message
 }
 
 func directRefLines(g *graph.Graph, obj graph.Object) []string {
@@ -2416,7 +2825,7 @@ func (m model) logsView(width, maxLines int) string {
 	if m.logPaused {
 		header = "paused"
 	}
-	if m.logPrevious || m.selectedPrefersPreviousLogs() {
+	if m.logPrevious {
 		header += " previous"
 	}
 	if m.logTimestamps {
@@ -2521,14 +2930,6 @@ func highlightLogLine(line, needle string) string {
 	return b.String()
 }
 
-func (m model) selectedPrefersPreviousLogs() bool {
-	obj, ok := m.selected()
-	if !ok {
-		return false
-	}
-	return shouldPreferPreviousLogs(m.snapshot.Graph, obj)
-}
-
 func detailsView(g *graph.Graph, obj graph.Object) string {
 	lines := obj.Summary()
 	edges := g.EdgesFor(obj.Ref)
@@ -2559,6 +2960,31 @@ func problemsView(g *graph.Graph, obj graph.Object) string {
 	return strings.Join(lines, "\n")
 }
 
+func impactView(g *graph.Graph, obj graph.Object) string {
+	refs := g.ImpactFor(obj.Ref, 5)
+	if len(refs) == 0 {
+		return "No loaded objects depend on this resource."
+	}
+	lines := []string{fmt.Sprintf("%d potentially affected objects", len(refs))}
+	for _, ref := range refs {
+		line := summaryKind(ref.Kind) + ": " + ref.Name
+		if problems := g.ProblemsFor(ref); len(problems) > 0 {
+			line += "  ! " + problems[0].Message
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func loadErrorsView(errors []string) string {
+	if len(errors) == 0 {
+		return "No snapshot load warnings."
+	}
+	lines := []string{fmt.Sprintf("%d resources could not be loaded:", len(errors))}
+	lines = append(lines, errors...)
+	return strings.Join(lines, "\n")
+}
+
 func helpView() string {
 	return strings.Join([]string{
 		"tab  switch pane (resources/chain/relations/status)",
@@ -2569,8 +2995,10 @@ func helpView() string {
 		"owner chain pane: j/k select an owner (or OLM subscription/installplan/csv), enter opens it, esc back",
 		"fullscreen logs: j/k or ↑/↓ scroll, G jump to live tail, n/N next/prev search match",
 		"status pane: j/k or ↑/↓ scroll, G back to top",
+		"i    blast radius / impact for the selected resource",
+		"!    snapshot load warnings (RBAC/API discovery failures)",
 		":q / ctrl-c quit",
-		":pod :svc :deploy :sts :ds :job :cj :cm :secret :pvc :all",
+		":pod :svc :deploy :sts :ds :job :cj :cm :secret :pvc :all (tab completes any discovered kind)",
 		":node :events :hpa :np :pdb :quota :cert",
 		":grep <text> / :nogrep / :since 5m",
 		":sort age|old|default",
@@ -2589,6 +3017,8 @@ func helpView() string {
 		"y    YAML",
 		"e    events",
 		"p    problems",
+		"i    impact / blast radius",
+		"!    load warnings",
 		"?    help",
 	}, "\n")
 }
@@ -2602,7 +3032,7 @@ func (m model) footer() string {
 		text = "/" + m.command
 	}
 	if text == "" {
-		text = "tab panes  l logs  enter open ref  :pod :deploy :svc :node :events  A age-sort  ?  help  :q"
+		text = "tab panes  l logs  enter open ref  i impact  :<kind> (tab complete)  A age-sort  ? help  :q"
 	}
 	return lipgloss.NewStyle().
 		Width(max(1, m.width)).
@@ -2619,7 +3049,7 @@ func paneTitle(title, body string, width, height int, active bool) string {
 	bodyWidth := max(8, width-4)
 	contentHeight := max(1, height-2)
 	content := titleStyle.Render(truncateText(title, bodyWidth)) + "\n" + fitPanelText(body, bodyWidth, contentHeight-1)
-	return paneStyle(active).Width(width).Height(contentHeight).Render(content)
+	return paneStyle(active).Width(max(1, width-paneBoxOverhead)).Height(contentHeight).Render(content)
 }
 
 // paneTitleRaw renders a body that the caller has already truncated/wrapped
@@ -2630,7 +3060,7 @@ func paneTitleRaw(title, body string, width, height int, active bool) string {
 	bodyWidth := max(8, width-4)
 	contentHeight := max(1, height-2)
 	content := titleStyle.Render(truncateText(title, bodyWidth)) + "\n" + body
-	return paneStyle(active).Width(width).Height(contentHeight).Render(content)
+	return paneStyle(active).Width(max(1, width-paneBoxOverhead)).Height(contentHeight).Render(content)
 }
 
 func paneStyle(active bool) lipgloss.Style {
@@ -2719,6 +3149,13 @@ func resourceStatus(obj graph.Object) (string, string) {
 	case "Certificate":
 		status := conditionStatus(obj)
 		return status, statusHealth(status)
+	}
+	if conditions, _, _ := unstructuredNestedSlice(obj, "status", "conditions"); len(conditions) > 0 {
+		status := conditionStatus(obj)
+		return status, statusHealth(status)
+	}
+	if phase, _, _ := unstructuredNestedString(obj, "status", "phase"); phase != "" {
+		return phase, statusHealth(phase)
 	}
 	return obj.Ref.Namespace, "neutral"
 }
@@ -2843,6 +3280,7 @@ func conditionStatus(obj graph.Object) string {
 	if len(conditions) == 0 {
 		return obj.Ref.Namespace
 	}
+	healthy := ""
 	for _, condition := range conditions {
 		c, ok := condition.(map[string]any)
 		if !ok {
@@ -2851,14 +3289,26 @@ func conditionStatus(obj graph.Object) string {
 		typ, _, _ := nestedString(c, "type")
 		status, _, _ := nestedString(c, "status")
 		reason, _, _ := nestedString(c, "reason")
-		if status != "True" {
+		if badWhenTrueConditions[typ] && status == "True" {
 			if reason != "" {
 				return typ + " " + status + " " + reason
 			}
 			return typ + " " + status
 		}
+		if positiveConditions[typ] {
+			if status != "True" {
+				if reason != "" {
+					return typ + " " + status + " " + reason
+				}
+				return typ + " " + status
+			}
+			healthy = typ
+		}
 	}
-	return "Ready"
+	if healthy != "" {
+		return healthy
+	}
+	return obj.Ref.Namespace
 }
 
 func podReady(obj graph.Object) (int, int) {
@@ -2976,6 +3426,13 @@ func truncateText(s string, maxWidth int) string {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/filipcsupka/krel/internal/graph"
 )
@@ -28,6 +29,11 @@ func TestLayoutFitsTerminal(t *testing.T) {
 		lines := strings.Split(got.View(), "\n")
 		if len(lines) > size.h {
 			t.Errorf("height=%d: view rendered %d lines (overflowed terminal)", size.h, len(lines))
+		}
+		for lineNumber, line := range lines {
+			if width := lipgloss.Width(line); width > size.w {
+				t.Errorf("size=%dx%d line=%d: rendered width %d (overflowed terminal)", size.w, size.h, lineNumber+1, width)
+			}
 		}
 	}
 }

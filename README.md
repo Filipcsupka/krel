@@ -41,10 +41,13 @@ The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, buil
 - Object summaries, relations, YAML, events, and problem views
 - Owner Chain pane: generic `metadata.ownerReferences` walk (Pod -> ReplicaSet -> Deployment, Job -> CronJob, ...), extended with the OLM `Subscription -> InstallPlan -> ClusterServiceVersion` chain on OpenShift/OLM clusters and an ArgoCD `Application` node (sync/health status) or a `managed-by: argocd|flux|helm` line when GitOps-managed
 - Fullscreen logs (`l`, k9s-style) with grep, previous-container, search, wrap, timestamps, and live-tail follow
+- True API follow streams: the viewport autoscrolls at the tail, freezes without dropping lines when paused/scrolled, and resumes with `G` or space
 - Non-interactive commands for scripts and quick checks
-- Support for Pods, Deployments, ReplicaSets, Services, EndpointSlices, ConfigMaps, Secrets, PVCs, ServiceAccounts, Ingresses, OpenShift Routes, OLM Subscriptions/InstallPlans/ClusterServiceVersions, and ArgoCD Applications
-- Relationship edges for ownership, Services selecting Pods, Pod references, Ingress backends, Routes pointing to Services, OLM install chains, and ArgoCD-managed objects
-- Basic problem detection for missing references, Services selecting zero Pods, and unbound PVCs
+- Discovery-driven browsing for every listable built-in and CRD advertised by the active cluster; kind, plural, and API short-name commands are supported
+- A fast relationship profile covering workloads, RBAC, storage/snapshots, Gateway API, External Secrets, Prometheus monitors, KEDA, Strimzi, Velero/OADP, OpenShift, OLM, and ArgoCD, plus generic CRD reference extraction
+- Cross-namespace mode (`-A` or `:ns all`) with namespace-qualified rows and focused relationship neighborhoods
+- Blast-radius analysis (`i`), graph-derived root-cause paths, resource quota/certificate/restart/ArgoCD/condition checks, and consolidated workload safeguards
+- Secret keys remain inspectable for relationship work, but Secret payloads are redacted from YAML
 
 ## Install
 
@@ -107,6 +110,12 @@ Open a specific namespace:
 kr --namespace default
 ```
 
+Inspect across all namespaces:
+
+```bash
+kr -A
+```
+
 Use a specific context or kubeconfig:
 
 ```bash
@@ -123,7 +132,10 @@ Kubeconfig loading follows standard Kubernetes client behavior:
 
 ## Layout
 
-Left and right columns each take half the screen width:
+On normal terminals, the resource list gets the largest useful share and the
+other panes size themselves to their content. On narrow or short terminals,
+only the focused pane is shown; `tab` and `shift+tab` move between panes
+without clipping the screen.
 
 - top-left: resource list, headed by the crumb `config: <kubeconfig> ctx: <context> ns: <namespace>  kind:...  sort:...`
 - bottom-left: Owner Chain — `metadata.ownerReferences` walked generically (Pod -> ReplicaSet -> Deployment, Job -> CronJob, ...), extended upward through OLM's `Subscription -> InstallPlan -> ClusterServiceVersion` and an ArgoCD `Application` node when present. `j`/`k` to move, `enter` opens the selected owner's values.
@@ -141,6 +153,7 @@ The Relations pane resets to the relations list whenever you move to a different
 | --- | --- |
 | `/` | Filter resources, or search logs when the fullscreen log view is open |
 | `tab` | Switch pane (resources / owner chain / relations / status) |
+| `shift+tab` | Switch to the previous pane |
 | `l` | Open fullscreen logs for the selected resource; `esc` or `l` to close |
 | `:` | Command mode |
 | `j` / `k` (relations pane) | Move between relations |
@@ -152,6 +165,8 @@ The Relations pane resets to the relations list whenever you move to a different
 | `y` | YAML view |
 | `e` | Events view |
 | `p` | Problems view |
+| `i` | Impact / blast-radius view |
+| `!` | Snapshot load warnings (RBAC or unavailable APIs) |
 | `?` | Help |
 | `q` | Quit |
 
@@ -161,10 +176,17 @@ Command mode:
 :ctx
 :ctx <name>
 :ns <namespace>
+:ns all
 :kubeconfig <path>
 :kc <path>
 :refresh
 ```
+
+In command mode, `tab` completes any discovered kind, plural resource name,
+or server-provided short name (for example `:kafkatopics`, `:clusteroperators`,
+or `:kt` where the API advertises that short name). When multiple API groups
+reuse a kind, use the fully qualified resource such as
+`:providerconfigs.aws.example.io`.
 
 ## CLI Commands
 

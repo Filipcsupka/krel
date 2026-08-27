@@ -38,7 +38,7 @@ func (d resourceDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 	statusStyle := statusColor(health)
 	statusText := truncateText(status, width/3)
 	nameWidth := max(1, width-len(statusText)-1)
-	name := truncateText(it.obj.Ref.Label(), nameWidth)
+	name := truncateText(it.Title(), nameWidth)
 	pad := nameWidth - len(name)
 	if pad < 1 {
 		pad = 1
@@ -66,6 +66,8 @@ func statusHealth(status string) string {
 		strings.Contains(normalized, "error"),
 		strings.Contains(normalized, "crash"),
 		strings.Contains(normalized, "imagepull"),
+		strings.Contains(normalized, " false"),
+		strings.Contains(normalized, "degraded"),
 		strings.Contains(normalized, "0/"):
 		return "bad"
 	case strings.Contains(normalized, "pending"),
@@ -75,6 +77,10 @@ func statusHealth(status string) string {
 	case strings.Contains(normalized, "running"),
 		strings.Contains(normalized, "succeeded"),
 		strings.Contains(normalized, "bound"),
+		strings.Contains(normalized, "available"),
+		strings.Contains(normalized, "healthy"),
+		strings.Contains(normalized, "synced"),
+		strings.Contains(normalized, "established"),
 		strings.Contains(normalized, "ready"):
 		return "good"
 	default:
