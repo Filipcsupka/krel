@@ -33,6 +33,14 @@ func nestedInt64(obj map[string]any, fields ...string) (int64, bool, error) {
 	return unstructured.NestedInt64(obj, fields...)
 }
 
+func nestedBool(obj map[string]any, fields ...string) (bool, bool, error) {
+	return unstructured.NestedBool(obj, fields...)
+}
+
+func nestedMap(obj map[string]any, fields ...string) (map[string]any, bool, error) {
+	return unstructured.NestedMap(obj, fields...)
+}
+
 func nestedSlice(obj map[string]any, fields ...string) ([]any, bool, error) {
 	return unstructured.NestedSlice(obj, fields...)
 }

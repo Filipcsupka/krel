@@ -30,7 +30,7 @@ func Build(objects []Object) *Graph {
 		if obj.Ref.UID != "" {
 			byUID[string(obj.Ref.UID)] = obj
 		}
-		if app := obj.Raw.GetLabels()[argoInstanceLabel]; app != "" {
+		if app := argoApplicationName(obj); app != "" {
 			byArgoInstance[app] = append(byArgoInstance[app], obj)
 		}
 	}
@@ -129,7 +129,12 @@ func Build(objects []Object) *Graph {
 		case "InstallPlan":
 			edges = appendInstallPlanEdges(edges, obj, index)
 		case "Application":
-			edges = appendArgoApplicationEdges(edges, obj, byArgoInstance[obj.Ref.Name])
+			managed := append([]Object{}, byArgoInstance[obj.Ref.Name]...)
+			// Argo's resource-tracking label is normally just the
+			// Application name, but namespaced tracking can use
+			// <application-namespace>/<application-name>.
+			managed = append(managed, byArgoInstance[obj.Ref.Namespace+"/"+obj.Ref.Name]...)
+			edges = appendArgoApplicationEdges(edges, obj, managed)
 			problems = append(problems, applicationProblems(obj)...)
 		case "Gateway":
 			edges = appendGatewayRefs(edges, obj, index)
@@ -904,6 +909,17 @@ func appendPodRefs(edges []Edge, problems []Problem, pod Object, index map[strin
 	}
 	edges, problems = appendNamedRef(edges, problems, pod, index, "ServiceAccount", sa, "UsesServiceAccount", "spec.serviceAccountName", "Pod uses ServiceAccount.")
 
+	imagePullSecrets, _, _ := unstructured.NestedSlice(pod.Raw.Object, "spec", "imagePullSecrets")
+	for _, rawRef := range imagePullSecrets {
+		ref, ok := rawRef.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _, _ := unstructured.NestedString(ref, "name"); name != "" {
+			edges, problems = appendNamedRef(edges, problems, pod, index, "Secret", name, "UsesImagePullSecret", "spec.imagePullSecrets.name", "Pod uses Secret as an image pull credential.")
+		}
+	}
+
 	volumes, _, _ := unstructured.NestedSlice(pod.Raw.Object, "spec", "volumes")
 	for _, volume := range volumes {
 		v, ok := volume.(map[string]any)
@@ -918,6 +934,19 @@ func appendPodRefs(edges []Edge, problems []Problem, pod Object, index map[strin
 		}
 		if name, _, _ := unstructured.NestedString(v, "persistentVolumeClaim", "claimName"); name != "" {
 			edges, problems = appendNamedRef(edges, problems, pod, index, "PersistentVolumeClaim", name, "Mounts", "spec.volumes.persistentVolumeClaim.claimName", "Pod volume mounts PVC.")
+		}
+		projected, _, _ := unstructured.NestedSlice(v, "projected", "sources")
+		for _, rawSource := range projected {
+			source, ok := rawSource.(map[string]any)
+			if !ok {
+				continue
+			}
+			if name, _, _ := unstructured.NestedString(source, "configMap", "name"); name != "" {
+				edges, problems = appendNamedRef(edges, problems, pod, index, "ConfigMap", name, "Mounts", "spec.volumes.projected.sources.configMap.name", "Pod projected volume mounts ConfigMap.")
+			}
+			if name, _, _ := unstructured.NestedString(source, "secret", "name"); name != "" {
+				edges, problems = appendNamedRef(edges, problems, pod, index, "Secret", name, "Mounts", "spec.volumes.projected.sources.secret.name", "Pod projected volume mounts Secret.")
+			}
 		}
 	}
 
@@ -1032,6 +1061,19 @@ func appendInstallPlanEdges(edges []Edge, plan Object, index map[string]Object) 
 // one place... except it doesn't; kept as a literal in both packages since
 // graph doesn't import tui and there's no shared constants file yet.
 const argoInstanceLabel = "argocd.argoproj.io/instance"
+const argoTrackingIDAnnotation = "argocd.argoproj.io/tracking-id"
+
+func argoApplicationName(obj Object) string {
+	if app := obj.Raw.GetLabels()[argoInstanceLabel]; app != "" {
+		return app
+	}
+	trackingID := obj.Raw.GetAnnotations()[argoTrackingIDAnnotation]
+	if trackingID == "" {
+		return ""
+	}
+	name, _, _ := strings.Cut(trackingID, ":")
+	return name
+}
 
 // appendArgoApplicationEdges links an ArgoCD Application to every
 // same-namespace object carrying its argocd.argoproj.io/instance label —
