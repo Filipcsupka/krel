@@ -704,6 +704,7 @@ func conditionMessage(typ, status, reason, message string) string {
 
 func appendServiceEndpointEdges(edges []Edge, problems []Problem, service Object, endpointSlices, endpoints []Object) ([]Edge, []Problem) {
 	hasEndpoint := false
+	hasReadyEndpoint := false
 	for _, slice := range endpointSlices {
 		if slice.Ref.Namespace != service.Ref.Namespace {
 			continue
@@ -712,6 +713,9 @@ func appendServiceEndpointEdges(edges []Edge, problems []Problem, service Object
 			continue
 		}
 		hasEndpoint = true
+		if endpointSliceHasReadyEndpoint(slice) {
+			hasReadyEndpoint = true
+		}
 		edges = append(edges, Edge{From: service.Ref, To: slice.Ref, Type: "HasEndpoints", Health: "Healthy", Source: "metadata.labels[kubernetes.io/service-name]", Reason: "EndpointSlice belongs to Service."})
 	}
 	for _, endpoint := range endpoints {
@@ -719,12 +723,47 @@ func appendServiceEndpointEdges(edges []Edge, problems []Problem, service Object
 			continue
 		}
 		hasEndpoint = true
+		if endpointsObjectHasReadyEndpoint(endpoint) {
+			hasReadyEndpoint = true
+		}
 		edges = append(edges, Edge{From: service.Ref, To: endpoint.Ref, Type: "HasEndpoints", Health: "Healthy", Source: "metadata.name", Reason: "Endpoints object belongs to Service."})
 	}
 	if !hasEndpoint {
 		problems = append(problems, Problem{Object: service.Ref, Level: "Warning", Message: "Service has no EndpointSlice or Endpoints object loaded."})
+	} else if !hasReadyEndpoint {
+		problems = append(problems, Problem{Object: service.Ref, Level: "Broken", Message: "Service has no ready endpoints."})
 	}
 	return edges, problems
+}
+
+func endpointSliceHasReadyEndpoint(slice Object) bool {
+	endpoints, _, _ := unstructured.NestedSlice(slice.Raw.Object, "endpoints")
+	for _, rawEndpoint := range endpoints {
+		endpoint, ok := rawEndpoint.(map[string]any)
+		if !ok {
+			continue
+		}
+		ready, found, _ := unstructured.NestedBool(endpoint, "conditions", "ready")
+		if !found || ready {
+			return true
+		}
+	}
+	return false
+}
+
+func endpointsObjectHasReadyEndpoint(endpoints Object) bool {
+	subsets, _, _ := unstructured.NestedSlice(endpoints.Raw.Object, "subsets")
+	for _, rawSubset := range subsets {
+		subset, ok := rawSubset.(map[string]any)
+		if !ok {
+			continue
+		}
+		addresses, _, _ := unstructured.NestedSlice(subset, "addresses")
+		if len(addresses) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func appendNetworkPolicyEdges(edges []Edge, policy Object, pods []Object) []Edge {

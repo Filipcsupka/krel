@@ -33,6 +33,41 @@ func TestBuildServiceSelectorEdgesAndProblem(t *testing.T) {
 	}
 }
 
+func TestBuildServiceDetectsServiceWithoutReadyEndpoints(t *testing.T) {
+	service := testObject("Service", "default", "api", "svc-1", map[string]any{
+		"spec": map[string]any{"selector": map[string]any{"app": "api"}},
+	})
+	slice := testObject("EndpointSlice", "default", "api-abc", "slice-1", map[string]any{
+		"metadata": map[string]any{"labels": map[string]any{"kubernetes.io/service-name": "api"}},
+		"endpoints": []any{
+			map[string]any{"addresses": []any{"10.0.0.5"}, "conditions": map[string]any{"ready": false}},
+		},
+	})
+
+	g := Build([]Object{service, slice})
+	if !hasProblem(g.Problems, service.Ref, "Service has no ready endpoints.") {
+		t.Fatalf("expected no-ready-endpoints problem, got %#v", g.Problems)
+	}
+}
+
+func TestBuildServiceAcceptsReadyEndpointSliceAndEndpoints(t *testing.T) {
+	service := testObject("Service", "default", "api", "svc-1", map[string]any{
+		"spec": map[string]any{"selector": map[string]any{"app": "api"}},
+	})
+	slice := testObject("EndpointSlice", "default", "api-abc", "slice-1", map[string]any{
+		"metadata":  map[string]any{"labels": map[string]any{"kubernetes.io/service-name": "api"}},
+		"endpoints": []any{map[string]any{"conditions": map[string]any{"ready": true}}},
+	})
+	legacy := testObject("Endpoints", "default", "api", "endpoints-1", map[string]any{
+		"subsets": []any{map[string]any{"addresses": []any{map[string]any{"ip": "10.0.0.5"}}}},
+	})
+
+	g := Build([]Object{service, slice, legacy})
+	if hasProblem(g.Problems, service.Ref, "Service has no ready endpoints.") {
+		t.Fatalf("did not expect no-ready-endpoints problem, got %#v", g.Problems)
+	}
+}
+
 func TestBuildPodReferenceEdgesAndMissingRefs(t *testing.T) {
 	secret := testObject("Secret", "default", "api-secret", "secret-1", nil)
 	projectedSecret := testObject("Secret", "default", "projected-secret", "secret-2", nil)

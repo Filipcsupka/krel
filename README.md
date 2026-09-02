@@ -46,6 +46,7 @@ The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, buil
 - Non-interactive commands for scripts and quick checks
 - Discovery-driven browsing for every listable built-in and CRD advertised by the active cluster; kind, plural, and API short-name commands are supported
 - A fast relationship profile covering workloads, RBAC, storage/snapshots, Gateway API, External Secrets, Prometheus monitors, KEDA, Strimzi, Velero/OADP, OpenShift, OLM, and ArgoCD, plus generic CRD reference extraction
+- Graph-derived service health checks: selector mismatches and Services with no ready EndpointSlice/Endpoints backends
 - Cross-namespace mode (`-A` or `:ns all`) with namespace-qualified rows and focused relationship neighborhoods
 - Blast-radius analysis (`i`), graph-derived root-cause paths, resource quota/certificate/restart/ArgoCD/condition checks, and consolidated workload safeguards
 - Secret keys remain inspectable for relationship work, but Secret payloads are redacted from YAML

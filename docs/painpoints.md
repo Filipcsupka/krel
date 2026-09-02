@@ -78,7 +78,8 @@ k9s = fast resource browser: list, logs, exec, edit, per-namespace. Strong at
   terminals. Horizontal and vertical bounds are regression-tested.
 - Status consolidates service/PDB/NetworkPolicy/resource-request/resource-limit/
   node checks; graph problems cover high restarts, quota saturation, certificate
-  expiry, negative generic conditions/phases, and ArgoCD sync/health.
+  expiry, negative generic conditions/phases, ArgoCD sync/health, and Services
+  whose loaded EndpointSlice/Endpoints objects contain no ready backend.
 
 ## Non-goals (unchanged)
 
