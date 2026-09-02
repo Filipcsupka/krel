@@ -2,6 +2,31 @@
 
 `krel` is in an early phase. The roadmap is intentionally practical and focused on making relationship inspection dependable.
 
+## Current Checkpoint (2026-09-02)
+
+The `feature/k9s-quality` branch is pushed and currently mergeable. The
+read-only relationship TUI is implemented through the split-pane workflow,
+live log streams, discovery-driven resource browsing, graph navigation,
+impact/problem views, filters, marks, auto-refresh, Secret redaction, and
+ArgoCD/OLM relationship hints. CI-equivalent local checks pass with
+`go test -race ./...`, `go vet ./...`, and `make build`.
+
+The latest graph diagnostics detect Services whose loaded EndpointSlice or
+legacy Endpoints objects have no ready backend, and HPA failures in
+`AbleToScale`, `ScalingActive`, `ScalingLimited`, or current/desired replica
+status.
+
+Not yet complete: `exec`, `port-forward`, event-driven watches for non-log
+resources, saved views/bookmarks, additional UX/problem-check polish, and a
+manual smoke test against a real cluster. Release binaries are described in
+the CI/release workflow but have not been manually verified as a published
+release from this branch.
+
+Next implementation priority: add the next focused diagnostics/UX slice,
+then implement a client-owned watch lifecycle for the active resource view;
+keep the existing three-second refresh as a fallback until watches are
+proven stable.
+
 ## Near Term
 
 - exec and port-forward, so krel can be a daily-driver terminal tool

@@ -8,6 +8,9 @@ The format follows Keep a Changelog, and this project uses semantic version tags
 
 ### Added
 
+- Service endpoint readiness diagnostics for EndpointSlice and legacy
+  Endpoints objects, plus HPA scaling diagnostics for failed conditions and
+  current-versus-desired replica gaps.
 - Discovery-driven access to every preferred listable built-in/CRD by kind,
   plural, or API short name, with command-mode tab completion and lazy loading
   outside a bounded operational relationship profile.

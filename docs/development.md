@@ -12,6 +12,30 @@ demand. All-namespace mode loads only the selected kind's relationship
 neighborhood to avoid turning CRD-heavy clusters into hundreds of eager API
 requests.
 
+## Next-session checkpoint
+
+As of 2026-09-02, work is on the pushed `feature/k9s-quality` branch at
+commit `729cd0c`. The branch is clean and mergeable after:
+
+```bash
+go test -race ./...
+go vet ./...
+make build
+```
+
+The current UI and graph features are in place. The remaining goal work is
+not a release blocker for the read-only core, but still needs implementation:
+
+- `exec` and `port-forward`
+- lazy watches for non-log resource updates
+- configurable saved views/bookmarks
+- more workload/network diagnostics and UX polish
+- manual smoke testing against a real Kubernetes/OpenShift cluster
+
+When resuming, start by reading `docs/roadmap.md`, then inspect the existing
+snapshot reload path in `internal/tui/model.go` and `internal/kube/snapshot.go`.
+Keep changes read-only and add focused graph/TUI tests for each slice.
+
 ## Requirements
 
 - Go 1.26 or newer
