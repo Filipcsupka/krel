@@ -68,6 +68,34 @@ func TestBuildServiceAcceptsReadyEndpointSliceAndEndpoints(t *testing.T) {
 	}
 }
 
+func TestBuildHPAProblems(t *testing.T) {
+	hpa := testObject("HorizontalPodAutoscaler", "default", "api", "hpa-1", map[string]any{
+		"status": map[string]any{
+			"currentReplicas": int64(1),
+			"desiredReplicas": int64(3),
+			"conditions": []any{
+				map[string]any{"type": "AbleToScale", "status": "False", "reason": "Backoff", "message": "scale target unavailable"},
+				map[string]any{"type": "ScalingActive", "status": "False", "reason": "FailedGetResourceMetric", "message": "unable to read cpu"},
+				map[string]any{"type": "ScalingLimited", "status": "True", "reason": "TooFewReplicas"},
+			},
+		},
+	})
+
+	g := Build([]Object{hpa})
+	if !hasProblem(g.Problems, hpa.Ref, "AbleToScale False Backoff: scale target unavailable.") {
+		t.Fatalf("expected AbleToScale problem, got %#v", g.Problems)
+	}
+	if !hasProblem(g.Problems, hpa.Ref, "ScalingActive False FailedGetResourceMetric: unable to read cpu.") {
+		t.Fatalf("expected ScalingActive problem, got %#v", g.Problems)
+	}
+	if !hasProblem(g.Problems, hpa.Ref, "ScalingLimited True TooFewReplicas.") {
+		t.Fatalf("expected ScalingLimited problem, got %#v", g.Problems)
+	}
+	if !hasProblem(g.Problems, hpa.Ref, "HPA is below desired replicas: 1/3.") {
+		t.Fatalf("expected replica gap problem, got %#v", g.Problems)
+	}
+}
+
 func TestBuildPodReferenceEdgesAndMissingRefs(t *testing.T) {
 	secret := testObject("Secret", "default", "api-secret", "secret-1", nil)
 	projectedSecret := testObject("Secret", "default", "projected-secret", "secret-2", nil)

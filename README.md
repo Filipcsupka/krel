@@ -45,7 +45,7 @@ The tool is intentionally read-only: it loads Kubernetes/OpenShift objects, buil
 - True API follow streams: the viewport autoscrolls at the tail, freezes without dropping lines when paused/scrolled, and resumes with `G` or space
 - Non-interactive commands for scripts and quick checks
 - Discovery-driven browsing for every listable built-in and CRD advertised by the active cluster; kind, plural, and API short-name commands are supported
-- A fast relationship profile covering workloads, RBAC, storage/snapshots, Gateway API, External Secrets, Prometheus monitors, KEDA, Strimzi, Velero/OADP, OpenShift, OLM, and ArgoCD, plus generic CRD reference extraction
+- A fast relationship profile covering workloads, RBAC, storage/snapshots, Gateway API, External Secrets, Prometheus monitors, KEDA, Strimzi, Velero/OADP, OpenShift, OLM, and ArgoCD, plus generic CRD reference extraction and HPA scaling diagnostics
 - Graph-derived service health checks: selector mismatches and Services with no ready EndpointSlice/Endpoints backends
 - Cross-namespace mode (`-A` or `:ns all`) with namespace-qualified rows and focused relationship neighborhoods
 - Blast-radius analysis (`i`), graph-derived root-cause paths, resource quota/certificate/restart/ArgoCD/condition checks, and consolidated workload safeguards
