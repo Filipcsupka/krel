@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/filipcsupka/krel/internal/graph"
 )
 
 type resourceDelegate struct{}
@@ -25,25 +27,138 @@ func (d resourceDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 	}
 	width := max(1, m.Width()-4)
 	selected := index == m.Index()
+	if it.obj.Ref.Kind == "Pod" && (it.wide || width >= 82) {
+		fmt.Fprint(w, renderPodTableRow(it, width, selected))
+		return
+	}
+	fmt.Fprint(w, renderCompactResourceRow(it, width, selected))
+}
+
+// renderCompactResourceRow is the narrow-terminal fallback for every
+// resource, including Pods whose table would not fit comfortably.
+func renderCompactResourceRow(it item, width int, selected bool) string {
 	prefix := "  "
 	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	if selected {
 		prefix = "│ "
 		nameStyle = nameStyle.Foreground(lipgloss.Color("39")).Bold(true)
 	}
-	status, health := resourceStatus(it.obj)
+	if it.marked {
+		prefix = "* "
+	}
+	status, health := resourceRowStatusMode(it.obj, width, it.wide)
 	if age := resourceAge(it.obj); age != "" {
 		status += " " + age
 	}
 	statusStyle := statusColor(health)
-	statusText := truncateText(status, width/3)
-	nameWidth := max(1, width-len(statusText)-1)
+	statusLimit := width / 3
+	if it.obj.Ref.Kind == "Pod" {
+		statusLimit = width / 2
+		if it.wide {
+			statusLimit = width * 2 / 3
+		}
+	}
+	statusText := truncateText(status, max(1, statusLimit))
+	nameWidth := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(statusText)-1)
 	name := truncateText(it.Title(), nameWidth)
-	pad := nameWidth - len(name)
+	pad := nameWidth - lipgloss.Width(name)
 	if pad < 1 {
 		pad = 1
 	}
-	fmt.Fprintf(w, "%s%s%s%s", prefix, nameStyle.Render(name), strings.Repeat(" ", pad), statusStyle.Render(statusText))
+	return fmt.Sprintf("%s%s%s%s", prefix, nameStyle.Render(name), strings.Repeat(" ", pad), statusStyle.Render(statusText))
+}
+
+// renderPodTableRow keeps the high-value Pod fields in stable columns on a
+// wide terminal. The compact renderer above remains the fallback for narrow
+// terminals, where forcing columns would make names and failure reasons less
+// readable. Widths are calculated from display cells rather than bytes so
+// Unicode names cannot push the row past the pane border.
+func renderPodTableRow(it item, width int, selected bool) string {
+	ready, total := podReady(it.obj)
+	phase, _, _ := unstructuredNestedString(it.obj, "status", "phase")
+	if reason := podImportantReason(it.obj); reason != "" {
+		phase = reason
+	}
+	if phase == "" {
+		phase = "-"
+	}
+	restarts := fmt.Sprintf("%d", podRestarts(it.obj))
+	node, _, _ := unstructuredNestedString(it.obj, "spec", "nodeName")
+	ip, _, _ := unstructuredNestedString(it.obj, "status", "podIP")
+	age := resourceAge(it.obj)
+	if age == "" {
+		age = "-"
+	}
+
+	// Keep the identity and health columns useful first. The node/IP columns
+	// share whatever width remains and disappear before those fields do.
+	nameWidth := minInt(34, max(18, width/3))
+	const readyWidth = 7
+	const statusWidth = 18
+	const restartsWidth = 10
+	const ageWidth = 6
+	// Leave one safety cell for terminal-width rounding and style padding.
+	separators := 7
+	remaining := max(0, width-nameWidth-readyWidth-statusWidth-restartsWidth-ageWidth-separators)
+	nodeWidth := remaining / 2
+	ipWidth := remaining - nodeWidth
+	if remaining < 10 {
+		return renderCompactResourceRow(it, width, selected)
+	}
+	marker := "  "
+	if it.marked {
+		marker = "* "
+	}
+	nameTextWidth := max(1, nameWidth-lipgloss.Width(marker))
+
+	fields := []string{
+		padTable(truncateText(it.Title(), nameTextWidth), nameTextWidth),
+		padTable(fmt.Sprintf("%d/%d", ready, total), readyWidth),
+		padTable(truncateText(phase, statusWidth), statusWidth),
+		padTable(truncateText(restarts, restartsWidth), restartsWidth),
+		padTable(truncateText(orDash(node), nodeWidth), nodeWidth),
+		padTable(truncateText(orDash(ip), ipWidth), ipWidth),
+		padTable(age, ageWidth),
+	}
+	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	if selected {
+		nameStyle = nameStyle.Foreground(lipgloss.Color("39")).Bold(true)
+	}
+	_, health := resourceStatus(it.obj)
+	statusStyle := statusColor(health)
+	row := nameStyle.Render(marker+fields[0]) + " " +
+		fields[1] + " " + statusStyle.Render(fields[2]) + " " +
+		fields[3] + " " + fields[4] + " " + fields[5] + " " + fields[6]
+	return row
+}
+
+func padTable(value string, width int) string {
+	value = truncateText(value, width)
+	return value + strings.Repeat(" ", max(0, width-lipgloss.Width(value)))
+}
+
+func resourceRowStatus(obj graph.Object, width int) (string, string) {
+	return resourceRowStatusMode(obj, width, false)
+}
+
+func resourceRowStatusMode(obj graph.Object, width int, wide bool) (string, string) {
+	status, health := resourceStatus(obj)
+	if obj.Ref.Kind != "Pod" {
+		return status, health
+	}
+	node, _, _ := unstructuredNestedString(obj, "spec", "nodeName")
+	if node != "" {
+		status += " node:" + node
+	}
+	// IP is useful during network debugging, but only include it when the
+	// row has enough room to keep the name and readiness readable.
+	if width >= 100 || wide {
+		ip, _, _ := unstructuredNestedString(obj, "status", "podIP")
+		if ip != "" {
+			status += " ip:" + ip
+		}
+	}
+	return status, health
 }
 
 func statusColor(health string) lipgloss.Style {

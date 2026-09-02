@@ -33,17 +33,88 @@ func TestBuildServiceSelectorEdgesAndProblem(t *testing.T) {
 	}
 }
 
+func TestBuildServiceDetectsServiceWithoutReadyEndpoints(t *testing.T) {
+	service := testObject("Service", "default", "api", "svc-1", map[string]any{
+		"spec": map[string]any{"selector": map[string]any{"app": "api"}},
+	})
+	slice := testObject("EndpointSlice", "default", "api-abc", "slice-1", map[string]any{
+		"metadata": map[string]any{"labels": map[string]any{"kubernetes.io/service-name": "api"}},
+		"endpoints": []any{
+			map[string]any{"addresses": []any{"10.0.0.5"}, "conditions": map[string]any{"ready": false}},
+		},
+	})
+
+	g := Build([]Object{service, slice})
+	if !hasProblem(g.Problems, service.Ref, "Service has no ready endpoints.") {
+		t.Fatalf("expected no-ready-endpoints problem, got %#v", g.Problems)
+	}
+}
+
+func TestBuildServiceAcceptsReadyEndpointSliceAndEndpoints(t *testing.T) {
+	service := testObject("Service", "default", "api", "svc-1", map[string]any{
+		"spec": map[string]any{"selector": map[string]any{"app": "api"}},
+	})
+	slice := testObject("EndpointSlice", "default", "api-abc", "slice-1", map[string]any{
+		"metadata":  map[string]any{"labels": map[string]any{"kubernetes.io/service-name": "api"}},
+		"endpoints": []any{map[string]any{"conditions": map[string]any{"ready": true}}},
+	})
+	legacy := testObject("Endpoints", "default", "api", "endpoints-1", map[string]any{
+		"subsets": []any{map[string]any{"addresses": []any{map[string]any{"ip": "10.0.0.5"}}}},
+	})
+
+	g := Build([]Object{service, slice, legacy})
+	if hasProblem(g.Problems, service.Ref, "Service has no ready endpoints.") {
+		t.Fatalf("did not expect no-ready-endpoints problem, got %#v", g.Problems)
+	}
+}
+
+func TestBuildHPAProblems(t *testing.T) {
+	hpa := testObject("HorizontalPodAutoscaler", "default", "api", "hpa-1", map[string]any{
+		"status": map[string]any{
+			"currentReplicas": int64(1),
+			"desiredReplicas": int64(3),
+			"conditions": []any{
+				map[string]any{"type": "AbleToScale", "status": "False", "reason": "Backoff", "message": "scale target unavailable"},
+				map[string]any{"type": "ScalingActive", "status": "False", "reason": "FailedGetResourceMetric", "message": "unable to read cpu"},
+				map[string]any{"type": "ScalingLimited", "status": "True", "reason": "TooFewReplicas"},
+			},
+		},
+	})
+
+	g := Build([]Object{hpa})
+	if !hasProblem(g.Problems, hpa.Ref, "AbleToScale False Backoff: scale target unavailable.") {
+		t.Fatalf("expected AbleToScale problem, got %#v", g.Problems)
+	}
+	if !hasProblem(g.Problems, hpa.Ref, "ScalingActive False FailedGetResourceMetric: unable to read cpu.") {
+		t.Fatalf("expected ScalingActive problem, got %#v", g.Problems)
+	}
+	if !hasProblem(g.Problems, hpa.Ref, "ScalingLimited True TooFewReplicas.") {
+		t.Fatalf("expected ScalingLimited problem, got %#v", g.Problems)
+	}
+	if !hasProblem(g.Problems, hpa.Ref, "HPA is below desired replicas: 1/3.") {
+		t.Fatalf("expected replica gap problem, got %#v", g.Problems)
+	}
+}
+
 func TestBuildPodReferenceEdgesAndMissingRefs(t *testing.T) {
 	secret := testObject("Secret", "default", "api-secret", "secret-1", nil)
+	projectedSecret := testObject("Secret", "default", "projected-secret", "secret-2", nil)
+	projectedConfig := testObject("ConfigMap", "default", "projected-config", "config-1", nil)
+	pullSecret := testObject("Secret", "default", "pull-secret", "secret-3", nil)
 	pvc := testObject("PersistentVolumeClaim", "default", "data", "pvc-1", map[string]any{
 		"status": map[string]any{"phase": "Pending"},
 	})
 	pod := testObject("Pod", "default", "api", "pod-1", map[string]any{
 		"spec": map[string]any{
 			"serviceAccountName": "missing-sa",
+			"imagePullSecrets":   []any{map[string]any{"name": "pull-secret"}},
 			"volumes": []any{
 				map[string]any{"name": "cfg", "configMap": map[string]any{"name": "missing-config"}},
 				map[string]any{"name": "data", "persistentVolumeClaim": map[string]any{"claimName": "data"}},
+				map[string]any{"name": "projected", "projected": map[string]any{"sources": []any{
+					map[string]any{"secret": map[string]any{"name": "projected-secret"}},
+					map[string]any{"configMap": map[string]any{"name": "projected-config"}},
+				}}},
 			},
 			"containers": []any{
 				map[string]any{
@@ -61,13 +132,19 @@ func TestBuildPodReferenceEdgesAndMissingRefs(t *testing.T) {
 		},
 	})
 
-	g := Build([]Object{secret, pvc, pod})
+	g := Build([]Object{secret, projectedSecret, projectedConfig, pullSecret, pvc, pod})
 
 	if !hasEdge(g.Edges, pod.Ref, secret.Ref, "UsesEnv") {
 		t.Fatalf("expected Pod to reference Secret through env, got %#v", g.Edges)
 	}
 	if !hasEdge(g.Edges, pod.Ref, pvc.Ref, "Mounts") {
 		t.Fatalf("expected Pod to mount PVC, got %#v", g.Edges)
+	}
+	if !hasEdge(g.Edges, pod.Ref, projectedSecret.Ref, "Mounts") || !hasEdge(g.Edges, pod.Ref, projectedConfig.Ref, "Mounts") {
+		t.Fatalf("expected projected volume Secret and ConfigMap edges, got %#v", g.Edges)
+	}
+	if !hasEdge(g.Edges, pod.Ref, pullSecret.Ref, "UsesImagePullSecret") {
+		t.Fatalf("expected imagePullSecret edge, got %#v", g.Edges)
 	}
 	if !hasProblem(g.Problems, pod.Ref, "Pod/api references missing ConfigMap/missing-config.") {
 		t.Fatalf("expected missing ConfigMap problem, got %#v", g.Problems)
@@ -151,6 +228,36 @@ func TestBuildArgoApplicationEdgesAcrossDestinationNamespace(t *testing.T) {
 	}
 	if hasEdge(g.Edges, app.Ref, wrongNamespace.Ref, "Manages") {
 		t.Fatalf("did not expect Argo edge outside destination namespace, got %#v", g.Edges)
+	}
+}
+
+func TestBuildArgoApplicationEdgesNamespacedTrackingLabel(t *testing.T) {
+	app := testObject("Application", "argocd", "billing", "app-1", nil)
+	managed := testObject("Deployment", "payments", "api", "deploy-1", map[string]any{
+		"metadata": map[string]any{"labels": map[string]any{
+			"argocd.argoproj.io/instance": "argocd/billing",
+		}},
+	})
+
+	g := Build([]Object{app, managed})
+	for _, edge := range g.Edges {
+		if edge.From.Key() == app.Ref.Key() && edge.To.Key() == managed.Ref.Key() && edge.Type == "Manages" {
+			return
+		}
+	}
+	t.Fatalf("expected namespaced Argo tracking label to create a Manages edge, got %#v", g.Edges)
+}
+
+func TestBuildArgoApplicationEdgesTrackingAnnotation(t *testing.T) {
+	app := testObject("Application", "argocd", "billing", "app-1", nil)
+	managed := testObject("Deployment", "payments", "api", "deploy-1", map[string]any{
+		"metadata": map[string]any{"annotations": map[string]any{
+			"argocd.argoproj.io/tracking-id": "billing:apps/Deployment:payments/api",
+		}},
+	})
+	g := Build([]Object{app, managed})
+	if !hasEdge(g.Edges, app.Ref, managed.Ref, "Manages") {
+		t.Fatalf("expected Argo tracking annotation to create a Manages edge, got %#v", g.Edges)
 	}
 }
 

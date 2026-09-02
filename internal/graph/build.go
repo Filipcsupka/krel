@@ -30,7 +30,7 @@ func Build(objects []Object) *Graph {
 		if obj.Ref.UID != "" {
 			byUID[string(obj.Ref.UID)] = obj
 		}
-		if app := obj.Raw.GetLabels()[argoInstanceLabel]; app != "" {
+		if app := argoApplicationName(obj); app != "" {
 			byArgoInstance[app] = append(byArgoInstance[app], obj)
 		}
 	}
@@ -110,6 +110,7 @@ func Build(objects []Object) *Graph {
 			edges = appendSelectorEdges(edges, obj, byKind["Pod"], "Protects", "spec.selector")
 		case "HorizontalPodAutoscaler":
 			edges, problems = appendHPAEdges(edges, problems, obj, index)
+			problems = append(problems, hpaProblems(obj)...)
 		case "Certificate":
 			edges, problems = appendCertificateEdges(edges, problems, obj, index)
 			problems = append(problems, conditionProblems(obj)...)
@@ -129,7 +130,12 @@ func Build(objects []Object) *Graph {
 		case "InstallPlan":
 			edges = appendInstallPlanEdges(edges, obj, index)
 		case "Application":
-			edges = appendArgoApplicationEdges(edges, obj, byArgoInstance[obj.Ref.Name])
+			managed := append([]Object{}, byArgoInstance[obj.Ref.Name]...)
+			// Argo's resource-tracking label is normally just the
+			// Application name, but namespaced tracking can use
+			// <application-namespace>/<application-name>.
+			managed = append(managed, byArgoInstance[obj.Ref.Namespace+"/"+obj.Ref.Name]...)
+			edges = appendArgoApplicationEdges(edges, obj, managed)
 			problems = append(problems, applicationProblems(obj)...)
 		case "Gateway":
 			edges = appendGatewayRefs(edges, obj, index)
@@ -699,6 +705,7 @@ func conditionMessage(typ, status, reason, message string) string {
 
 func appendServiceEndpointEdges(edges []Edge, problems []Problem, service Object, endpointSlices, endpoints []Object) ([]Edge, []Problem) {
 	hasEndpoint := false
+	hasReadyEndpoint := false
 	for _, slice := range endpointSlices {
 		if slice.Ref.Namespace != service.Ref.Namespace {
 			continue
@@ -707,6 +714,9 @@ func appendServiceEndpointEdges(edges []Edge, problems []Problem, service Object
 			continue
 		}
 		hasEndpoint = true
+		if endpointSliceHasReadyEndpoint(slice) {
+			hasReadyEndpoint = true
+		}
 		edges = append(edges, Edge{From: service.Ref, To: slice.Ref, Type: "HasEndpoints", Health: "Healthy", Source: "metadata.labels[kubernetes.io/service-name]", Reason: "EndpointSlice belongs to Service."})
 	}
 	for _, endpoint := range endpoints {
@@ -714,12 +724,47 @@ func appendServiceEndpointEdges(edges []Edge, problems []Problem, service Object
 			continue
 		}
 		hasEndpoint = true
+		if endpointsObjectHasReadyEndpoint(endpoint) {
+			hasReadyEndpoint = true
+		}
 		edges = append(edges, Edge{From: service.Ref, To: endpoint.Ref, Type: "HasEndpoints", Health: "Healthy", Source: "metadata.name", Reason: "Endpoints object belongs to Service."})
 	}
 	if !hasEndpoint {
 		problems = append(problems, Problem{Object: service.Ref, Level: "Warning", Message: "Service has no EndpointSlice or Endpoints object loaded."})
+	} else if !hasReadyEndpoint {
+		problems = append(problems, Problem{Object: service.Ref, Level: "Broken", Message: "Service has no ready endpoints."})
 	}
 	return edges, problems
+}
+
+func endpointSliceHasReadyEndpoint(slice Object) bool {
+	endpoints, _, _ := unstructured.NestedSlice(slice.Raw.Object, "endpoints")
+	for _, rawEndpoint := range endpoints {
+		endpoint, ok := rawEndpoint.(map[string]any)
+		if !ok {
+			continue
+		}
+		ready, found, _ := unstructured.NestedBool(endpoint, "conditions", "ready")
+		if !found || ready {
+			return true
+		}
+	}
+	return false
+}
+
+func endpointsObjectHasReadyEndpoint(endpoints Object) bool {
+	subsets, _, _ := unstructured.NestedSlice(endpoints.Raw.Object, "subsets")
+	for _, rawSubset := range subsets {
+		subset, ok := rawSubset.(map[string]any)
+		if !ok {
+			continue
+		}
+		addresses, _, _ := unstructured.NestedSlice(subset, "addresses")
+		if len(addresses) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func appendNetworkPolicyEdges(edges []Edge, policy Object, pods []Object) []Edge {
@@ -740,6 +785,42 @@ func appendHPAEdges(edges []Edge, problems []Problem, hpa Object, index map[stri
 		return edges, problems
 	}
 	return appendNamedRef(edges, problems, hpa, index, kind, name, "Scales", "spec.scaleTargetRef", "HPA scales target workload.")
+}
+
+func hpaProblems(hpa Object) []Problem {
+	var problems []Problem
+	conditions, _, _ := unstructured.NestedSlice(hpa.Raw.Object, "status", "conditions")
+	for _, rawCondition := range conditions {
+		condition, ok := rawCondition.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _, _ := unstructured.NestedString(condition, "type")
+		status, _, _ := unstructured.NestedString(condition, "status")
+		if typ == "AbleToScale" && status == "False" {
+			problems = append(problems, Problem{Object: hpa.Ref, Level: "Broken", Message: hpaConditionMessage(condition)})
+		}
+		if typ == "ScalingActive" && status == "False" {
+			problems = append(problems, Problem{Object: hpa.Ref, Level: "Broken", Message: hpaConditionMessage(condition)})
+		}
+		if typ == "ScalingLimited" && status == "True" {
+			problems = append(problems, Problem{Object: hpa.Ref, Level: "Warning", Message: hpaConditionMessage(condition)})
+		}
+	}
+	current, currentFound, _ := unstructured.NestedInt64(hpa.Raw.Object, "status", "currentReplicas")
+	desired, desiredFound, _ := unstructured.NestedInt64(hpa.Raw.Object, "status", "desiredReplicas")
+	if currentFound && desiredFound && desired > 0 && current < desired {
+		problems = append(problems, Problem{Object: hpa.Ref, Level: "Warning", Message: fmt.Sprintf("HPA is below desired replicas: %d/%d.", current, desired)})
+	}
+	return problems
+}
+
+func hpaConditionMessage(condition map[string]any) string {
+	typ, _, _ := unstructured.NestedString(condition, "type")
+	status, _, _ := unstructured.NestedString(condition, "status")
+	reason, _, _ := unstructured.NestedString(condition, "reason")
+	message, _, _ := unstructured.NestedString(condition, "message")
+	return conditionMessage(typ, status, reason, message)
 }
 
 func appendCertificateEdges(edges []Edge, problems []Problem, cert Object, index map[string]Object) ([]Edge, []Problem) {
@@ -904,6 +985,17 @@ func appendPodRefs(edges []Edge, problems []Problem, pod Object, index map[strin
 	}
 	edges, problems = appendNamedRef(edges, problems, pod, index, "ServiceAccount", sa, "UsesServiceAccount", "spec.serviceAccountName", "Pod uses ServiceAccount.")
 
+	imagePullSecrets, _, _ := unstructured.NestedSlice(pod.Raw.Object, "spec", "imagePullSecrets")
+	for _, rawRef := range imagePullSecrets {
+		ref, ok := rawRef.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _, _ := unstructured.NestedString(ref, "name"); name != "" {
+			edges, problems = appendNamedRef(edges, problems, pod, index, "Secret", name, "UsesImagePullSecret", "spec.imagePullSecrets.name", "Pod uses Secret as an image pull credential.")
+		}
+	}
+
 	volumes, _, _ := unstructured.NestedSlice(pod.Raw.Object, "spec", "volumes")
 	for _, volume := range volumes {
 		v, ok := volume.(map[string]any)
@@ -918,6 +1010,19 @@ func appendPodRefs(edges []Edge, problems []Problem, pod Object, index map[strin
 		}
 		if name, _, _ := unstructured.NestedString(v, "persistentVolumeClaim", "claimName"); name != "" {
 			edges, problems = appendNamedRef(edges, problems, pod, index, "PersistentVolumeClaim", name, "Mounts", "spec.volumes.persistentVolumeClaim.claimName", "Pod volume mounts PVC.")
+		}
+		projected, _, _ := unstructured.NestedSlice(v, "projected", "sources")
+		for _, rawSource := range projected {
+			source, ok := rawSource.(map[string]any)
+			if !ok {
+				continue
+			}
+			if name, _, _ := unstructured.NestedString(source, "configMap", "name"); name != "" {
+				edges, problems = appendNamedRef(edges, problems, pod, index, "ConfigMap", name, "Mounts", "spec.volumes.projected.sources.configMap.name", "Pod projected volume mounts ConfigMap.")
+			}
+			if name, _, _ := unstructured.NestedString(source, "secret", "name"); name != "" {
+				edges, problems = appendNamedRef(edges, problems, pod, index, "Secret", name, "Mounts", "spec.volumes.projected.sources.secret.name", "Pod projected volume mounts Secret.")
+			}
 		}
 	}
 
@@ -1032,6 +1137,19 @@ func appendInstallPlanEdges(edges []Edge, plan Object, index map[string]Object) 
 // one place... except it doesn't; kept as a literal in both packages since
 // graph doesn't import tui and there's no shared constants file yet.
 const argoInstanceLabel = "argocd.argoproj.io/instance"
+const argoTrackingIDAnnotation = "argocd.argoproj.io/tracking-id"
+
+func argoApplicationName(obj Object) string {
+	if app := obj.Raw.GetLabels()[argoInstanceLabel]; app != "" {
+		return app
+	}
+	trackingID := obj.Raw.GetAnnotations()[argoTrackingIDAnnotation]
+	if trackingID == "" {
+		return ""
+	}
+	name, _, _ := strings.Cut(trackingID, ":")
+	return name
+}
 
 // appendArgoApplicationEdges links an ArgoCD Application to every
 // same-namespace object carrying its argocd.argoproj.io/instance label —
